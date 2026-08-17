@@ -1,5 +1,6 @@
 import GlucoseChart from '@/components/GlucoseChart';
 import Timeline from '@/components/Timeline';
+import AuditoriaSemanal from '@/components/AuditoriaSemanal';
 import AutoRefresh from '@/components/AutoRefresh';
 import ErrorDeConexion from '@/components/ErrorDeConexion';
 import { getLecturasDeHoy, getTimelineDeHoy, getEstadisticasDeHoy } from '@/lib/queries';
@@ -84,6 +85,8 @@ export default async function HistorialPage() {
           {stats.lecturas} lecturas hoy · rango objetivo 70–180 mg/dL
         </p>
       </section>
+
+      <AuditoriaSemanal />
 
       <section aria-label="Eventos del día">
         <h2 className="mb-3 text-lg font-semibold">Eventos de hoy</h2>
