@@ -226,3 +226,13 @@ main().catch((err) => {
   logger.error(`Fallo fatal en main(): ${logger.describeError(err)}`);
   process.exit(1);
 });
+// --- HACK PARA RENDER (SERVIDOR FANTASMA) ---
+const http = require('http');
+const port = process.env.PORT || 3000;
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('PancreasOS Worker Vivo y Coleando\n');
+}).listen(port, () => {
+  console.log(`[Web] Servidor fantasma encendido en el puerto ${port} para engañar a Render.`);
+});
+// --------------------------------------------
