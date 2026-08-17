@@ -3,18 +3,15 @@
 import { useFormStatus } from 'react-dom';
 import { Check, AlertCircle, Loader2 } from 'lucide-react';
 
-/** Radio disfrazado de botón: accesible con teclado y sin estado en React. */
-export function OpcionBoton({ name, value, children, defaultChecked, required }) {
+/**
+ * Radio disfrazado de botón: accesible con teclado y con área táctil grande.
+ * Funciona tanto sin estado (defaultChecked) como controlado desde React
+ * (checked + onChange), según lo necesite cada formulario.
+ */
+export function OpcionBoton({ name, value, children, ...props }) {
   return (
     <label className="flex-1">
-      <input
-        type="radio"
-        name={name}
-        value={value}
-        defaultChecked={defaultChecked}
-        required={required}
-        className="peer sr-only"
-      />
+      <input type="radio" name={name} value={value} {...props} className="peer sr-only" />
       <span className="flex min-h-14 cursor-pointer items-center justify-center rounded-xl border border-borde bg-superficie px-2 text-center text-sm font-medium transition-colors peer-checked:border-acento peer-checked:bg-acento/15 peer-checked:text-acento peer-focus-visible:ring-2 peer-focus-visible:ring-acento">
         {children}
       </span>

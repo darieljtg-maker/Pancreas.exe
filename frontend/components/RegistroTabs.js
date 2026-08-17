@@ -15,10 +15,13 @@ const PESTANAS = [
   { id: 'actividad', etiqueta: 'Actividad', Icono: Footprints, Form: ActividadForm },
 ];
 
-export default function RegistroTabs({ inicial = 'comida' }) {
+export default function RegistroTabs({ inicial = 'comida', glucosaActual }) {
   const [activa, setActiva] = useState(inicial);
   const actual = PESTANAS.find((p) => p.id === activa) ?? PESTANAS[0];
   const { Form } = actual;
+
+  // Solo el formulario de comida usa la glucosa (para calcular la porción).
+  const props = actual.id === 'comida' ? { glucosaActual } : {};
 
   return (
     <div className="flex flex-col gap-5">
@@ -49,7 +52,7 @@ export default function RegistroTabs({ inicial = 'comida' }) {
       {/* Se monta solo el formulario activo: cambiar de pestaña limpia lo
           escrito, que es lo que quieres para no mezclar dos registros. */}
       <div role="tabpanel" id={`panel-${actual.id}`} key={actual.id}>
-        <Form />
+        <Form {...props} />
       </div>
     </div>
   );

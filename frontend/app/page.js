@@ -5,6 +5,7 @@ import GlucoseHero from '@/components/GlucoseHero';
 import QuickStats from '@/components/QuickStats';
 import AutoRefresh from '@/components/AutoRefresh';
 import ErrorDeConexion from '@/components/ErrorDeConexion';
+import VigilanteHipo from '@/components/VigilanteHipo';
 import {
   getUltimaLectura,
   getLecturaPrevia,
@@ -36,6 +37,12 @@ export default async function Dashboard() {
   return (
     <div className="flex flex-col gap-5 pb-4">
       <AutoRefresh segundos={60} />
+
+      {/* Si el sensor reporta por debajo de 70, esto toma la pantalla completa. */}
+      <VigilanteHipo
+        glucosa={datos.lectura?.glucose_value}
+        timestamp={datos.lectura?.timestamp}
+      />
 
       <header>
         <h1 className="text-2xl font-bold">Gaelito</h1>
