@@ -53,6 +53,49 @@ export function ajustePorTendencia(valor) {
 }
 
 /**
+ * Fenómeno del alba: entre las 05:00 y las 11:30 hay resistencia a la
+ * insulina, así que la misma dosis rinde menos y el plato debe achicarse.
+ */
+export const ALBA = { desdeMin: 5 * 60, hastaMin: 11 * 60 + 30, reduccion: 0.2 };
+
+/** Reducción extra cuando la comida es de absorción rápida (IG alto). */
+export const REDUCCION_IG_ALTO = 0.15;
+
+/** Minutos desde medianoche en la zona horaria indicada. */
+export function minutosLocales(fecha, zona) {
+  const partes = new Intl.DateTimeFormat('es-MX', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: zona,
+  }).formatToParts(fecha);
+
+  const h = Number(partes.find((p) => p.type === 'hour').value);
+  const m = Number(partes.find((p) => p.type === 'minute').value);
+  return h * 60 + m;
+}
+
+export function enVentanaAlba(fecha, zona) {
+  const min = minutosLocales(fecha, zona);
+  return min >= ALBA.desdeMin && min <= ALBA.hastaMin;
+}
+
+/** Clasificaciones que puede devolver el análisis de índice glucémico. */
+export const CLASIFICACIONES_IG = ['Bajo', 'Medio', 'Alto'];
+
+/**
+ * Qué hacer cuando la comida es de absorción rápida.
+ *
+ * Con insulina ultra-rápida (actúa en ~2 minutos) NO se espera antes de
+ * comer: un pre-bolus prolongado provocaría hipoglucemia. Lo que se cambia
+ * es el ORDEN de los alimentos dentro del mismo plato.
+ */
+export const AVISO_IG_ALTO =
+  'Alimentos de Rápida Absorción. Como usas insulina ultra-rápida, CÓMETE PRIMERO ' +
+  'la proteína o grasa (ej. carne, queso) y deja los carbohidratos al final para ' +
+  'frenar el pico de glucosa.';
+
+/**
  * Cada tipo de comida tiene su dosis fija y dos menús intercambiables.
  * `carbosBase` es el total del plato tal como lo diseñó el nutriólogo;
  * los fijos aportan `carbosBase - ajustable.carbos`.
@@ -159,7 +202,14 @@ export function calcularAjuste(glucosa) {
  * Si el ajuste pide menos de 0 g, la ración se topa en 0: no existen los
  * gramos negativos, y el resto del plato ya está fijo.
  */
-export function calcularPorcion({ tipo, menu, glucosa, tendencia }) {
+export function calcularPorcion({
+  tipo,
+  menu,
+  glucosa,
+  tendencia,
+  alba = false,
+  igAlto = false,
+}) {
   const comida = MENUS[tipo];
   const receta = comida?.menus?.[menu];
   if (!receta) return null;
@@ -174,8 +224,23 @@ export function calcularPorcion({ tipo, menu, glucosa, tendencia }) {
 
   // El extra por tendencia se suma al alimento ajustable, que es lo único
   // que se puede mover: los fijos van completos por indicación del plan.
-  const carbosIdeales = receta.ajustable.carbos + ajuste + extra;
-  const topado = carbosIdeales < 0;
+  const ajustableIdeal = receta.ajustable.carbos + ajuste + extra;
+  const ajustableSinFactores = Math.max(0, ajustableIdeal);
+  const totalSinFactores = carbosFijos + ajustableSinFactores;
+
+  // Alba e índice glucémico recortan el TOTAL del plato. Como los fijos no
+  // se tocan, el recorte completo lo absorbe el alimento ajustable, que por
+  // eso puede quedarse en 0 antes que el total llegue al objetivo.
+  const factorAlba = alba ? 1 - ALBA.reduccion : 1;
+  const factorIG = igAlto ? 1 - REDUCCION_IG_ALTO : 1;
+  const totalPermitido = totalSinFactores * factorAlba * factorIG;
+
+  const carbosIdeales = totalPermitido - carbosFijos;
+
+  // Se marca como topado si la ración quedó en cero en cualquiera de las dos
+  // etapas: por la glucosa alta, o porque los factores recortaron el total
+  // por debajo de lo que ya aportan los alimentos fijos.
+  const topado = ajustableIdeal < 0 || carbosIdeales < 0;
   const carbosAjustable = Math.max(0, carbosIdeales);
 
   // Regla de tres contra la ración base del plan.
@@ -194,6 +259,12 @@ export function calcularPorcion({ tipo, menu, glucosa, tendencia }) {
     ajuste: redondear(ajuste, 1),
     tendencia: flecha,
     ajusteTendencia: extra,
+    alba,
+    igAlto,
+    // Cuántos gramos se recortaron por cada factor, para poder mostrarlo.
+    recorteAlba: redondear(totalSinFactores - totalSinFactores * factorAlba, 1),
+    recorteIG: redondear(totalSinFactores * factorAlba * (1 - factorIG), 1),
+    totalSinFactores: redondear(totalSinFactores, 1),
     topado,
     fijos: receta.fijos,
     carbosFijos,

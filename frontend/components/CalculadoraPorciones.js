@@ -1,13 +1,19 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Scale, Syringe, Lock, ArrowDown, ArrowUp, Minus, ClipboardCheck, TrendingDown,
+  Sparkles, Loader2, Sunrise, Flame, AlertCircle,
 } from 'lucide-react';
 
 import AlertaHipoglucemia from './AlertaHipoglucemia';
+import { analizarComidaIG } from '@/app/ai-actions';
 import {
   calcularPorcion,
+  enVentanaAlba,
+  ALBA,
+  REDUCCION_IG_ALTO,
+  AVISO_IG_ALTO,
   MENUS,
   TIPOS_COMIDA,
   TENDENCIAS,
@@ -15,6 +21,7 @@ import {
   SENSIBILIDAD,
   UMBRAL_HIPO,
 } from '@/lib/menus';
+import { TZ } from '@/lib/config';
 
 /**
  * Ingeniería inversa de carbohidratos.
@@ -44,14 +51,43 @@ export default function CalculadoraPorciones({
   const [menu, setMenu] = useState(1);
   const [hipoCerrada, setHipoCerrada] = useState(false);
 
+  const [textoComida, setTextoComida] = useState('');
+  const [analisis, setAnalisis] = useState(null);
+  const [analizando, setAnalizando] = useState(false);
+
+  // La ventana del alba se evalúa con la hora real, refrescada cada minuto
+  // por si la calculadora queda abierta cruzando las 11:30.
+  const [ahora, setAhora] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setAhora(Date.now()), 60000);
+    return () => clearInterval(id);
+  }, []);
+
   const tipoActivo = tipoFijo || tipo;
   const valor = Number(glucosa);
   const hayValor = Number.isFinite(valor) && valor > 0;
   const esHipo = hayValor && valor < UMBRAL_HIPO;
 
+  const alba = enVentanaAlba(new Date(ahora), TZ);
+  const igAlto = analisis?.ok && analisis.clasificacionIG === 'Alto';
+
   const r = esHipo
     ? null
-    : calcularPorcion({ tipo: tipoActivo, menu, glucosa: valor, tendencia });
+    : calcularPorcion({ tipo: tipoActivo, menu, glucosa: valor, tendencia, alba, igAlto });
+
+  async function analizar() {
+    if (analizando || textoComida.trim().length < 3) return;
+    setAnalizando(true);
+    try {
+      setAnalisis(await analizarComidaIG(textoComida));
+    } catch (err) {
+      setAnalisis({ ok: false, mensaje: err?.message || 'No se pudo analizar la comida.' });
+    } finally {
+      setAnalizando(false);
+    }
+  }
+
+  const COLOR_IG = { Alto: 'text-bajo', Medio: 'text-alto', Bajo: 'text-rango' };
 
   const claseCampo =
     'w-full rounded-xl border border-borde bg-superficie px-4 py-3.5 text-texto placeholder:text-tenue focus:border-acento focus:outline-none focus:ring-1 focus:ring-acento';
@@ -133,6 +169,68 @@ export default function CalculadoraPorciones({
         </label>
       )}
 
+      {/* Análisis de absorción de la comida. */}
+      <div className="flex flex-col gap-2">
+        <label className="flex flex-col gap-2">
+          <span className="text-sm font-medium">
+            ¿Qué va a comer?
+            <span className="ml-2 font-normal text-tenue">para estimar la absorción</span>
+          </span>
+          <textarea
+            value={textoComida}
+            onChange={(e) => {
+              setTextoComida(e.target.value);
+              setAnalisis(null);
+            }}
+            maxLength={500}
+            rows={2}
+            placeholder="1 plátano, taza de leche, huevos revueltos"
+            className={`${claseCampo} min-h-20 resize-y`}
+          />
+        </label>
+
+        <button
+          type="button"
+          onClick={analizar}
+          disabled={analizando || textoComida.trim().length < 3}
+          className="flex min-h-14 w-full items-center justify-center gap-2 rounded-xl border border-acento/50 bg-acento/10 text-sm font-semibold text-acento transition-opacity active:opacity-80 disabled:opacity-40"
+        >
+          {analizando ? (
+            <Loader2 size={18} className="animate-spin" aria-hidden="true" />
+          ) : (
+            <Sparkles size={18} aria-hidden="true" />
+          )}
+          {analizando ? 'Analizando comida...' : 'Analizar Comida (IA)'}
+        </button>
+
+        {analisis && !analisis.ok && (
+          <p className="flex items-start gap-2 rounded-xl bg-bajo/10 px-4 py-3 text-sm text-bajo">
+            <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+            {analisis.mensaje}
+          </p>
+        )}
+
+        {analisis?.ok && (
+          <div
+            aria-label="Resultado del análisis de absorción"
+            className="flex items-start gap-2 rounded-xl border border-borde bg-superficie px-4 py-3"
+          >
+            <Flame size={16} className={`mt-0.5 shrink-0 ${COLOR_IG[analisis.clasificacionIG]}`} aria-hidden="true" />
+            <div className="min-w-0">
+              <p className="text-sm">
+                Absorción{' '}
+                <span className={`font-bold ${COLOR_IG[analisis.clasificacionIG]}`}>
+                  {analisis.clasificacionIG.toUpperCase()}
+                </span>
+              </p>
+              {analisis.warning && (
+                <p className="text-xs text-tenue">{analisis.warning}</p>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
       <div>
         <p className="mb-2 text-sm font-medium">Menú</p>
         <div className="flex gap-2">
@@ -195,6 +293,42 @@ export default function CalculadoraPorciones({
                   Va {r.tendencia.texto.toLowerCase()}: para cuando termine de comer estará más
                   abajo de lo que marca ahora.
                 </span>
+              </span>
+            </p>
+          )}
+
+          {r.igAlto && (
+            <div
+              role="alert"
+              aria-label="Advertencia de absorción rápida"
+              className="rounded-xl border-2 border-bajo bg-bajo/15 px-4 py-4"
+            >
+              <p className="text-base font-bold leading-snug text-bajo">
+                ⚠️ {AVISO_IG_ALTO}
+              </p>
+            </div>
+          )}
+
+          {r.alba && (
+            <p className="flex items-start gap-2 rounded-xl border border-alto/40 bg-alto/10 px-4 py-3 text-sm">
+              <Sunrise size={18} className="mt-0.5 shrink-0 text-alto" aria-hidden="true" />
+              <span>
+                <span className="font-semibold text-alto">
+                  Fenómeno del alba: −{Math.round(ALBA.reduccion * 100)}% de carbohidratos
+                </span>
+                <span className="block text-xs text-tenue">
+                  Por la mañana hay más resistencia a la insulina, así que la misma dosis
+                  rinde menos.
+                </span>
+              </span>
+            </p>
+          )}
+
+          {r.igAlto && (
+            <p className="flex items-start gap-2 rounded-xl border border-bajo/40 bg-bajo/10 px-4 py-3 text-sm">
+              <Flame size={18} className="mt-0.5 shrink-0 text-bajo" aria-hidden="true" />
+              <span className="font-semibold text-bajo">
+                Absorción alta: −{Math.round(REDUCCION_IG_ALTO * 100)}% adicional de carbohidratos
               </span>
             </p>
           )}
@@ -282,6 +416,24 @@ export default function CalculadoraPorciones({
                 </dd>
               </div>
               <div className="flex justify-between gap-3 border-t border-borde pt-1.5">
+                <dt className="text-tenue">Total antes de factores</dt>
+                <dd className="font-mono">{r.totalSinFactores} g</dd>
+              </div>
+              {r.alba && (
+                <div className="flex justify-between gap-3">
+                  <dt className="text-tenue">Alba (−{Math.round(ALBA.reduccion * 100)}%)</dt>
+                  <dd className="font-mono font-semibold text-alto">−{r.recorteAlba} g</dd>
+                </div>
+              )}
+              {r.igAlto && (
+                <div className="flex justify-between gap-3">
+                  <dt className="text-tenue">
+                    Absorción alta (−{Math.round(REDUCCION_IG_ALTO * 100)}%)
+                  </dt>
+                  <dd className="font-mono font-semibold text-bajo">−{r.recorteIG} g</dd>
+                </div>
+              )}
+              <div className="flex justify-between gap-3 border-t border-borde pt-1.5">
                 <dt className="text-tenue">{r.ajustable.nombre} base</dt>
                 <dd className="font-mono">
                   {r.ajustable.carbos} g carbos · {r.ajustable.gramos} g peso
@@ -311,6 +463,7 @@ export default function CalculadoraPorciones({
                 onUsar({
                   carbos: r.carbosTotales,
                   descripcion:
+                    (textoComida.trim() ? `${textoComida.trim()} · ` : '') +
                     `Menú ${r.menu} — ` +
                     [
                       ...r.fijos.map((f) => `${f.nombre} (${f.porcion})`),
