@@ -1,0 +1,467 @@
+import 'server-only';
+import { query, INICIO_DEL_DIA, TZ } from './db';
+
+/**
+ * Todos los SELECT viven aquí. Las páginas son Server Components y llaman a
+ * estas funciones directamente: no hace falta una API Route intermedia.
+ */
+
+/** Última lectura del sensor. Es la que manda en el Hero del dashboard. */
+export async function getUltimaLectura() {
+  const { rows } = await query(
+    `SELECT glucose_value, trend_arrow, "timestamp"
+       FROM cgm_readings
+      ORDER BY "timestamp" DESC
+      LIMIT 1`
+  );
+  return rows[0] ?? null;
+}
+
+/** Lectura de hace ~15 min, para calcular el delta contra la actual. */
+export async function getLecturaPrevia() {
+  const { rows } = await query(
+    `SELECT glucose_value, "timestamp"
+       FROM cgm_readings
+      WHERE "timestamp" <= now() - interval '15 minutes'
+      ORDER BY "timestamp" DESC
+      LIMIT 1`
+  );
+  return rows[0] ?? null;
+}
+
+export async function getUltimaInsulina() {
+  const { rows } = await query(
+    `SELECT type, units, "timestamp"
+       FROM insulin_logs
+      ORDER BY "timestamp" DESC
+      LIMIT 1`
+  );
+  return rows[0] ?? null;
+}
+
+export async function getUltimaComida() {
+  const { rows } = await query(
+    `SELECT meal_type, description, carbs_grams, "timestamp"
+       FROM meals
+      ORDER BY "timestamp" DESC
+      LIMIT 1`
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * Ventana de un día natural en la zona horaria de la app.
+ *
+ * Se calcula en SQL y no en JavaScript porque el servidor de Vercel corre en
+ * UTC: un `new Date()` allá cambiaría de día a las 6 de la tarde hora de México.
+ */
+const RANGO_DEL_DIA = `
+   "timestamp" >= (($1::date)::timestamp AT TIME ZONE '${TZ}')
+   AND "timestamp" <  ((($1::date) + 1)::timestamp AT TIME ZONE '${TZ}')`;
+
+/** Fecha de hoy como 'YYYY-MM-DD' según la zona de la app, resuelta por la base. */
+export async function getHoyLocal() {
+  const { rows } = await query(
+    `SELECT to_char(now() AT TIME ZONE '${TZ}', 'YYYY-MM-DD') AS hoy`
+  );
+  return rows[0].hoy;
+}
+
+/** Curva completa del día indicado para la gráfica. */
+export async function getLecturasDelDia(fecha) {
+  const { rows } = await query(
+    `SELECT glucose_value, trend_arrow, "timestamp"
+       FROM cgm_readings
+      WHERE ${RANGO_DEL_DIA}
+      ORDER BY "timestamp" ASC`,
+    [fecha]
+  );
+  return rows;
+}
+
+/** Curva completa de hoy. Se mantiene por compatibilidad con el dashboard. */
+export async function getLecturasDeHoy() {
+  const { rows } = await query(
+    `SELECT glucose_value, trend_arrow, "timestamp"
+       FROM cgm_readings
+      WHERE "timestamp" >= ${INICIO_DEL_DIA}
+      ORDER BY "timestamp" ASC`
+  );
+  return rows;
+}
+
+/** Tiempo en rango y extremos del día indicado. */
+export async function getEstadisticasDelDia(fecha) {
+  const { rows } = await query(
+    `SELECT
+        count(*)::int                                                   AS lecturas,
+        avg(glucose_value)::numeric(6,1)                                AS promedio,
+        min(glucose_value)::int                                         AS minimo,
+        max(glucose_value)::int                                         AS maximo,
+        count(*) FILTER (WHERE glucose_value BETWEEN 70 AND 180)::int   AS en_rango,
+        count(*) FILTER (WHERE glucose_value < 70)::int                 AS bajas,
+        count(*) FILTER (WHERE glucose_value > 180)::int                AS altas
+       FROM cgm_readings
+      WHERE ${RANGO_DEL_DIA}`,
+    [fecha]
+  );
+
+  const s = rows[0] ?? {};
+  const total = s.lecturas || 0;
+  return {
+    lecturas: total,
+    promedio: s.promedio != null ? Number(s.promedio) : null,
+    minimo: s.minimo,
+    maximo: s.maximo,
+    porcentajeEnRango: total ? Math.round((s.en_rango / total) * 100) : null,
+    porcentajeBajo: total ? Math.round((s.bajas / total) * 100) : null,
+    porcentajeAlto: total ? Math.round((s.altas / total) * 100) : null,
+  };
+}
+
+/** Totales de comida, insulina, agua y actividad del día indicado. */
+export async function getTotalesDelDia(fecha) {
+  const { rows } = await query(
+    `SELECT
+       (SELECT coalesce(sum(carbs_grams), 0)     FROM meals        WHERE ${RANGO_DEL_DIA}) AS carbos,
+       (SELECT coalesce(sum(units), 0)           FROM insulin_logs WHERE ${RANGO_DEL_DIA}) AS unidades,
+       (SELECT coalesce(sum(amount_ml), 0)       FROM water_logs   WHERE ${RANGO_DEL_DIA}) AS agua_ml,
+       (SELECT coalesce(sum(duration_minutes),0) FROM activities   WHERE ${RANGO_DEL_DIA}) AS minutos_actividad`,
+    [fecha]
+  );
+  const t = rows[0] ?? {};
+  return {
+    carbos: Number(t.carbos || 0),
+    unidades: Number(t.unidades || 0),
+    aguaMl: Number(t.agua_ml || 0),
+    minutosActividad: Number(t.minutos_actividad || 0),
+  };
+}
+
+/** Línea de tiempo del día indicado, con la glucosa de cada momento. */
+export async function getTimelineDelDia(fecha) {
+  const { rows } = await query(
+    `WITH eventos AS (
+        SELECT 'comida'::text  AS tipo, m."timestamp" AS ts,
+               coalesce(m.meal_type, 'Comida') AS titulo,
+               m.description AS detalle,
+               m.carbs_grams::numeric AS cantidad, 'g'::text AS unidad
+          FROM meals m WHERE ${RANGO_DEL_DIA.replaceAll('"timestamp"', 'm."timestamp"')}
+        UNION ALL
+        SELECT 'insulina', i."timestamp",
+               coalesce(i.type, 'Insulina'), NULL,
+               i.units::numeric, 'U'
+          FROM insulin_logs i WHERE ${RANGO_DEL_DIA.replaceAll('"timestamp"', 'i."timestamp"')}
+        UNION ALL
+        SELECT 'actividad', a."timestamp",
+               coalesce(a.activity_type, 'Actividad'), a.intensity,
+               a.duration_minutes::numeric, 'min'
+          FROM activities a WHERE ${RANGO_DEL_DIA.replaceAll('"timestamp"', 'a."timestamp"')}
+        UNION ALL
+        SELECT 'agua', w."timestamp",
+               'Agua', NULL,
+               w.amount_ml::numeric, 'ml'
+          FROM water_logs w WHERE ${RANGO_DEL_DIA.replaceAll('"timestamp"', 'w."timestamp"')}
+     )
+     SELECT e.tipo, e.ts, e.titulo, e.detalle, e.cantidad, e.unidad,
+            g.glucose_value, g.trend_arrow
+       FROM eventos e
+       LEFT JOIN LATERAL (
+            SELECT c.glucose_value, c.trend_arrow
+              FROM cgm_readings c
+             WHERE c."timestamp" BETWEEN e.ts - interval '10 minutes'
+                                     AND e.ts + interval '10 minutes'
+             ORDER BY abs(extract(epoch FROM (c."timestamp" - e.ts)))
+             LIMIT 1
+       ) g ON true
+      ORDER BY e.ts DESC`,
+    [fecha]
+  );
+
+  return rows.map((r) => ({
+    ...r,
+    cantidad: r.cantidad != null ? Number(r.cantidad) : null,
+  }));
+}
+
+/** Días que tienen algún dato, para saber hasta dónde se puede retroceder. */
+export async function getRangoDeDatos() {
+  const { rows } = await query(
+    `SELECT to_char(min("timestamp") AT TIME ZONE '${TZ}', 'YYYY-MM-DD') AS primero,
+            to_char(max("timestamp") AT TIME ZONE '${TZ}', 'YYYY-MM-DD') AS ultimo
+       FROM cgm_readings`
+  );
+  return rows[0] ?? { primero: null, ultimo: null };
+}
+
+/**
+ * Tiempo en rango del día. Es la métrica que de verdad le importa al
+ * endocrinólogo, más que cualquier lectura suelta.
+ */
+export async function getEstadisticasDeHoy() {
+  const { rows } = await query(
+    `SELECT
+        count(*)::int                                                   AS lecturas,
+        avg(glucose_value)::numeric(6,1)                                AS promedio,
+        min(glucose_value)::int                                         AS minimo,
+        max(glucose_value)::int                                         AS maximo,
+        count(*) FILTER (WHERE glucose_value BETWEEN 70 AND 180)::int   AS en_rango,
+        count(*) FILTER (WHERE glucose_value < 70)::int                 AS bajas,
+        count(*) FILTER (WHERE glucose_value > 180)::int                AS altas
+       FROM cgm_readings
+      WHERE "timestamp" >= ${INICIO_DEL_DIA}`
+  );
+
+  const s = rows[0] ?? {};
+  const total = s.lecturas || 0;
+  return {
+    lecturas: total,
+    promedio: s.promedio != null ? Number(s.promedio) : null,
+    minimo: s.minimo,
+    maximo: s.maximo,
+    porcentajeEnRango: total ? Math.round((s.en_rango / total) * 100) : null,
+    porcentajeBajo: total ? Math.round((s.bajas / total) * 100) : null,
+    porcentajeAlto: total ? Math.round((s.altas / total) * 100) : null,
+  };
+}
+
+/** Totales del día para las tarjetas de resumen. */
+export async function getTotalesDeHoy() {
+  const { rows } = await query(
+    `SELECT
+       (SELECT coalesce(sum(carbs_grams), 0)     FROM meals        WHERE "timestamp" >= ${INICIO_DEL_DIA}) AS carbos,
+       (SELECT coalesce(sum(units), 0)           FROM insulin_logs WHERE "timestamp" >= ${INICIO_DEL_DIA}) AS unidades,
+       (SELECT coalesce(sum(amount_ml), 0)       FROM water_logs   WHERE "timestamp" >= ${INICIO_DEL_DIA}) AS agua_ml,
+       (SELECT coalesce(sum(duration_minutes),0) FROM activities   WHERE "timestamp" >= ${INICIO_DEL_DIA}) AS minutos_actividad`
+  );
+  const t = rows[0] ?? {};
+  return {
+    carbos: Number(t.carbos || 0),
+    unidades: Number(t.unidades || 0),
+    aguaMl: Number(t.agua_ml || 0),
+    minutosActividad: Number(t.minutos_actividad || 0),
+  };
+}
+
+/**
+ * Línea de tiempo del día: comidas, insulina, actividad y agua en un solo
+ * flujo, cada evento con la glucosa que había en ese momento (LATERAL a la
+ * lectura más cercana). Se omiten las lecturas sueltas del sensor porque son
+ * ~288 al día y taparían todo lo demás; para eso está la gráfica.
+ */
+export async function getTimelineDeHoy() {
+  const { rows } = await query(
+    `WITH eventos AS (
+        SELECT 'comida'::text  AS tipo, m."timestamp" AS ts,
+               coalesce(m.meal_type, 'Comida') AS titulo,
+               m.description AS detalle,
+               m.carbs_grams::numeric AS cantidad, 'g'::text AS unidad
+          FROM meals m WHERE m."timestamp" >= ${INICIO_DEL_DIA}
+        UNION ALL
+        SELECT 'insulina', i."timestamp",
+               coalesce(i.type, 'Insulina'), NULL,
+               i.units::numeric, 'U'
+          FROM insulin_logs i WHERE i."timestamp" >= ${INICIO_DEL_DIA}
+        UNION ALL
+        SELECT 'actividad', a."timestamp",
+               coalesce(a.activity_type, 'Actividad'), a.intensity,
+               a.duration_minutes::numeric, 'min'
+          FROM activities a WHERE a."timestamp" >= ${INICIO_DEL_DIA}
+        UNION ALL
+        SELECT 'agua', w."timestamp",
+               'Agua', NULL,
+               w.amount_ml::numeric, 'ml'
+          FROM water_logs w WHERE w."timestamp" >= ${INICIO_DEL_DIA}
+     )
+     SELECT e.tipo, e.ts, e.titulo, e.detalle, e.cantidad, e.unidad,
+            g.glucose_value, g.trend_arrow
+       FROM eventos e
+       LEFT JOIN LATERAL (
+            SELECT c.glucose_value, c.trend_arrow
+              FROM cgm_readings c
+             WHERE c."timestamp" BETWEEN e.ts - interval '10 minutes'
+                                     AND e.ts + interval '10 minutes'
+             ORDER BY abs(extract(epoch FROM (c."timestamp" - e.ts)))
+             LIMIT 1
+       ) g ON true
+      ORDER BY e.ts DESC`
+  );
+
+  return rows.map((r) => ({
+    ...r,
+    cantidad: r.cantidad != null ? Number(r.cantidad) : null,
+  }));
+}
+
+/**
+ * Contexto para el pronóstico a corto plazo: la última hora de sensor más
+ * lo que tiene digiriéndose y la insulina que sigue activa.
+ */
+export async function getContextoVigilante() {
+  const [lecturas, comida, insulina] = await Promise.all([
+    query(
+      `SELECT glucose_value, trend_arrow, "timestamp"
+         FROM cgm_readings
+        ORDER BY "timestamp" DESC
+        LIMIT 12`
+    ),
+    query(
+      `SELECT meal_type, description, carbs_grams, "timestamp"
+         FROM meals
+        WHERE "timestamp" >= now() - interval '5 hours'
+        ORDER BY "timestamp" DESC
+        LIMIT 1`
+    ),
+    query(
+      `SELECT type, units, "timestamp"
+         FROM insulin_logs
+        WHERE "timestamp" >= now() - interval '6 hours'
+        ORDER BY "timestamp" DESC
+        LIMIT 3`
+    ),
+  ]);
+
+  return {
+    // Ascendente: la curva se lee mejor de la más vieja a la más nueva.
+    lecturas: lecturas.rows.reverse(),
+    ultimaComida: comida.rows[0] ?? null,
+    insulinaReciente: insulina.rows,
+  };
+}
+
+/**
+ * Contexto semanal. La glucosa va agregada por hora del día en vez de cruda:
+ * 7 días son ~2000 lecturas, y lo que revela un patrón es el promedio de cada
+ * horario, no cada punto suelto.
+ */
+export async function getContextoSemanal() {
+  const desde = `now() - interval '7 days'`;
+
+  const [porHora, porDia, comidas, insulina] = await Promise.all([
+    query(
+      `SELECT extract(hour FROM "timestamp" AT TIME ZONE '${TZ}')::int AS hora,
+              count(*)::int                                            AS lecturas,
+              round(avg(glucose_value))::int                           AS promedio,
+              min(glucose_value)::int                                  AS minimo,
+              max(glucose_value)::int                                  AS maximo,
+              count(*) FILTER (WHERE glucose_value < 70)::int          AS bajas,
+              count(*) FILTER (WHERE glucose_value > 180)::int         AS altas
+         FROM cgm_readings
+        WHERE "timestamp" >= ${desde}
+        GROUP BY 1
+        ORDER BY 1`
+    ),
+    query(
+      `SELECT to_char("timestamp" AT TIME ZONE '${TZ}', 'YYYY-MM-DD')  AS dia,
+              round(avg(glucose_value))::int                           AS promedio,
+              min(glucose_value)::int                                  AS minimo,
+              max(glucose_value)::int                                  AS maximo,
+              round(100.0 * count(*) FILTER (WHERE glucose_value BETWEEN 70 AND 180)
+                    / nullif(count(*), 0))::int                        AS en_rango
+         FROM cgm_readings
+        WHERE "timestamp" >= ${desde}
+        GROUP BY 1
+        ORDER BY 1`
+    ),
+    query(
+      `SELECT meal_type, description, carbs_grams,
+              to_char("timestamp" AT TIME ZONE '${TZ}', 'YYYY-MM-DD HH24:MI') AS cuando
+         FROM meals
+        WHERE "timestamp" >= ${desde}
+        ORDER BY "timestamp"`
+    ),
+    query(
+      `SELECT type, units,
+              to_char("timestamp" AT TIME ZONE '${TZ}', 'YYYY-MM-DD HH24:MI') AS cuando
+         FROM insulin_logs
+        WHERE "timestamp" >= ${desde}
+        ORDER BY "timestamp"`
+    ),
+  ]);
+
+  return {
+    porHora: porHora.rows,
+    porDia: porDia.rows,
+    comidas: comidas.rows,
+    insulina: insulina.rows,
+    totalLecturas: porHora.rows.reduce((suma, f) => suma + f.lecturas, 0),
+  };
+}
+
+// ---------------------------------------------------------------- DAILY LOG
+
+/** Todo lo consumido en una fecha, con sus totales ya sumados. */
+export async function getConsumoDelDia(fecha) {
+  const [registros, totales] = await Promise.all([
+    query(
+      `SELECT id, comida, origen, descripcion, calorias, carbos, proteina, grasa,
+              unidades, ruta, ugp, created_at
+         FROM daily_log
+        WHERE fecha = $1::date
+        ORDER BY created_at ASC`,
+      [fecha]
+    ),
+    query(
+      `SELECT coalesce(sum(calorias), 0) AS calorias,
+              coalesce(sum(carbos),   0) AS carbos,
+              coalesce(sum(proteina), 0) AS proteina,
+              coalesce(sum(grasa),    0) AS grasa,
+              coalesce(sum(unidades), 0) AS unidades
+         FROM daily_log
+        WHERE fecha = $1::date`,
+      [fecha]
+    ),
+  ]);
+
+  const t = totales.rows[0] ?? {};
+  return {
+    registros: registros.rows.map((r) => ({
+      ...r,
+      calorias: Number(r.calorias),
+      carbos: Number(r.carbos),
+      proteina: Number(r.proteina),
+      grasa: Number(r.grasa),
+      unidades: r.unidades != null ? Number(r.unidades) : null,
+      ugp: r.ugp != null ? Number(r.ugp) : null,
+    })),
+    totales: {
+      calorias: Number(t.calorias || 0),
+      carbos: Number(t.carbos || 0),
+      proteina: Number(t.proteina || 0),
+      grasa: Number(t.grasa || 0),
+      unidades: Number(t.unidades || 0),
+    },
+  };
+}
+
+/** Comprueba si la tabla existe, para avisar en vez de reventar. */
+export async function existeDailyLog() {
+  const { rows } = await query(
+    `SELECT 1 FROM information_schema.tables
+      WHERE table_name = 'daily_log'
+        AND table_schema = ANY (current_schemas(false))
+      LIMIT 1`
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Id de Gaelito para las comidas. Se resuelve una vez y se cachea: primero
+ * PATIENT_USER_ID, si no el usuario con rol de paciente, si no el primero.
+ */
+let pacienteCacheado;
+
+export async function getPacienteId() {
+  if (process.env.PATIENT_USER_ID) return process.env.PATIENT_USER_ID;
+  if (pacienteCacheado !== undefined) return pacienteCacheado;
+
+  const { rows } = await query(
+    `SELECT id FROM users
+      WHERE role ILIKE 'pat%' OR role ILIKE 'pac%'
+      ORDER BY id LIMIT 1`
+  );
+  if (rows[0]) return (pacienteCacheado = rows[0].id);
+
+  const fallback = await query('SELECT id FROM users ORDER BY id LIMIT 1');
+  return (pacienteCacheado = fallback.rows[0]?.id ?? null);
+}
