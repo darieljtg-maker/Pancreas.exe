@@ -2,11 +2,12 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Activity, PlusCircle, LineChart } from 'lucide-react';
+import { Activity, PlusCircle, LineChart, Dumbbell } from 'lucide-react';
 
 const ENLACES = [
   { href: '/', etiqueta: 'Ahora', Icono: Activity },
   { href: '/registro', etiqueta: 'Registrar', Icono: PlusCircle },
+  { href: '/plan', etiqueta: 'Plan', Icono: Dumbbell },
   { href: '/historial', etiqueta: 'Historial', Icono: LineChart },
 ];
 

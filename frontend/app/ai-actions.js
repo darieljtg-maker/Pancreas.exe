@@ -7,6 +7,7 @@ import { COOKIE_SESION, tokenValido } from '@/lib/auth';
 import { getContextoVigilante, getContextoSemanal } from '@/lib/queries';
 import { hora, fechaLarga } from '@/lib/glucosa';
 import { normalizarTendencia, CLASIFICACIONES_IG } from '@/lib/menus';
+import { calcularUGP } from '@/lib/calculosNutricionales';
 
 /**
  * Análisis con Gemini.
@@ -403,6 +404,302 @@ export async function analizarComidaIG(textoComida) {
     return valor;
   } catch (err) {
     console.error('[analizarComidaIG]', err);
+    return { ok: false, mensaje: describirError(err), configuracion: Boolean(err?.configuracion) };
+  }
+}
+
+// ---------------------------------------------------------------- NUTRICIÓN
+
+const MODELO_NUTRICION = process.env.GEMINI_MODEL_NUTRICION || MODELO_VIGILANTE;
+
+const REGLAS_ALIMENTOS = `Reglas de alimentos, sin excepción:
+- SOLO alimentos naturales: carnes, pescados, huevo, verduras, frutas,
+  leguminosas, cereales integrales, tubérculos, frutos secos y semillas.
+- CERO ultraprocesados: nada de embutidos, cereales de caja, barritas,
+  galletas, panes industriales, salsas comerciales ni suplementos en polvo.
+- Única excepción permitida: lácteos sin azúcar añadida (leche, yogurt
+  natural, queso fresco, requesón).
+- Cocina mexicana de casa siempre que se pueda; el paciente tiene 12 años.
+- Especifica SIEMPRE si el gramaje es en CRUDO o en COCIDO. Para arroz,
+  pasta, leguminosas y carnes el peso cambia mucho entre uno y otro.`;
+
+const PROMPT_MENUS = `Eres un nutriólogo deportivo especializado en Diabetes tipo 1 infantil.
+El paciente tiene 12.8 años, 41 kg, 1.52 m, entrena hipertrofia 4 veces por
+semana y está en volumen limpio.
+
+Crea 3 opciones de comida natural que cumplan EXACTAMENTE con los macros
+pedidos. Tolerancia máxima: 5% en cada macro. Haz la aritmética de los
+gramajes antes de responder y verifica que la suma cuadre.
+
+${REGLAS_ALIMENTOS}
+
+Las 3 opciones deben ser realmente distintas entre sí: distinta fuente de
+proteína y distinta guarnición. En "preparacionCorta" describe el modo de
+preparación en una sola frase.`;
+
+const ESQUEMA_MENUS = {
+  type: Type.OBJECT,
+  properties: {
+    opciones: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          opcion: { type: Type.INTEGER },
+          nombre: { type: Type.STRING },
+          ingredientes: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                nombre: { type: Type.STRING },
+                cantidad: { type: Type.STRING },
+                estadoCrudoCocido: { type: Type.STRING, enum: ['crudo', 'cocido', 'no aplica'] },
+              },
+              required: ['nombre', 'cantidad', 'estadoCrudoCocido'],
+            },
+          },
+          preparacionCorta: { type: Type.STRING },
+          macros: {
+            type: Type.OBJECT,
+            properties: {
+              proteina: { type: Type.NUMBER },
+              carbos: { type: Type.NUMBER },
+              grasa: { type: Type.NUMBER },
+              calorias: { type: Type.NUMBER },
+            },
+            required: ['proteina', 'carbos', 'grasa', 'calorias'],
+          },
+        },
+        required: ['opcion', 'nombre', 'ingredientes', 'preparacionCorta', 'macros'],
+      },
+    },
+  },
+  required: ['opciones'],
+};
+
+const cacheMenus = new Map();
+const MAX_CACHE = 60;
+
+function guardarEnCache(mapa, clave, valor) {
+  if (mapa.size >= MAX_CACHE) mapa.delete(mapa.keys().next().value);
+  mapa.set(clave, valor);
+}
+
+const numeroSeguro = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v) * 10) / 10 : 0);
+
+/**
+ * Genera 3 menús que cuadren con los macros de una comida concreta.
+ * `macros` viene del motor antropométrico (ruta A o ruta B).
+ */
+export async function generarOpcionesComida({ nombreComida, proteina, carbos, grasa, calorias }) {
+  if (!(await haySesion())) return { ok: false, mensaje: 'Sesión no válida.' };
+
+  const p = numeroSeguro(proteina);
+  const c = numeroSeguro(carbos);
+  const g = numeroSeguro(grasa);
+  const kcal = numeroSeguro(calorias);
+
+  if (p + c + g <= 0) return { ok: false, mensaje: 'No hay macros que cubrir.' };
+
+  const clave = `${nombreComida}|${p}|${c}|${g}`;
+  if (cacheMenus.has(clave)) return { ...cacheMenus.get(clave), deCache: true };
+
+  try {
+    const ai = cliente();
+    const respuesta = await ai.models.generateContent({
+      model: MODELO_NUTRICION,
+      contents:
+        `Comida: ${nombreComida || 'comida'}.\n` +
+        `Macros objetivo — Proteína: ${p} g, Carbohidratos: ${c} g, Grasa: ${g} g` +
+        (kcal ? `, Calorías: ${kcal} kcal.` : '.'),
+      config: {
+        systemInstruction: PROMPT_MENUS,
+        temperature: 0.7,
+        responseMimeType: 'application/json',
+        responseSchema: ESQUEMA_MENUS,
+      },
+    });
+
+    const datos = extraerJson(respuesta.text);
+    const opciones = Array.isArray(datos?.opciones) ? datos.opciones : null;
+    if (!opciones?.length) {
+      return { ok: false, mensaje: 'El modelo no devolvió opciones interpretables.' };
+    }
+
+    // Se recalcula la desviación en el servidor: el modelo dice que cuadra,
+    // pero eso hay que comprobarlo antes de enseñarlo como exacto.
+    const limpias = opciones.slice(0, 3).map((o, i) => {
+      const m = o.macros ?? {};
+      const macros = {
+        proteina: numeroSeguro(m.proteina),
+        carbos: numeroSeguro(m.carbos),
+        grasa: numeroSeguro(m.grasa),
+        calorias: numeroSeguro(m.calorias),
+      };
+      const desvio = {
+        proteina: p ? Math.round(((macros.proteina - p) / p) * 100) : 0,
+        carbos: c ? Math.round(((macros.carbos - c) / c) * 100) : 0,
+        grasa: g ? Math.round(((macros.grasa - g) / g) * 100) : 0,
+      };
+      return {
+        opcion: Number(o.opcion) || i + 1,
+        nombre: String(o.nombre || `Opción ${i + 1}`).slice(0, 120),
+        preparacionCorta: String(o.preparacionCorta || '').slice(0, 400),
+        ingredientes: (Array.isArray(o.ingredientes) ? o.ingredientes : [])
+          .slice(0, 12)
+          .map((ing) => ({
+            nombre: String(ing?.nombre || '').slice(0, 80),
+            cantidad: String(ing?.cantidad || '').slice(0, 40),
+            estadoCrudoCocido: ['crudo', 'cocido', 'no aplica'].includes(ing?.estadoCrudoCocido)
+              ? ing.estadoCrudoCocido
+              : 'no aplica',
+          }))
+          .filter((ing) => ing.nombre),
+        macros,
+        desvio,
+        // Más de 10% de diferencia deja de ser "exacto" y hay que avisarlo.
+        cuadra: Math.max(...Object.values(desvio).map(Math.abs)) <= 10,
+      };
+    });
+
+    const valor = { ok: true, opciones: limpias, objetivo: { proteina: p, carbos: c, grasa: g, calorias: kcal }, modelo: MODELO_NUTRICION };
+    guardarEnCache(cacheMenus, clave, valor);
+    return valor;
+  } catch (err) {
+    console.error('[generarOpcionesComida]', err);
+    return { ok: false, mensaje: describirError(err), configuracion: Boolean(err?.configuracion) };
+  }
+}
+
+// ---------------------------------------------------------------- ANTOJOS
+
+const PROMPT_ANTOJO = `Eres un nutriólogo deportivo especializado en Diabetes tipo 1 infantil.
+El paciente quiere comer algo concreto. Tu trabajo NO es negárselo: es
+calcular en qué cantidad exacta encaja dentro de los macros que le quedan.
+
+${REGLAS_ALIMENTOS}
+
+Devuelve:
+- "ingredientes": cada alimento que pidió, con la cantidad exacta en gramos
+  o mililitros que cuadra con los macros disponibles, indicando crudo o cocido.
+- "faltante": si tras esas cantidades aún sobran macros por cubrir, sugiere
+  UN alimento natural concreto y su gramaje, con el texto en la forma
+  "Para completar tu meta, añade X gramos de [alimento]". Cadena vacía si no
+  falta nada.
+- "highUGP": true SOLO si la suma de grasa y proteína del conjunto supera
+  las 2 Unidades Grasa-Proteína (1 UGP = 100 kcal de grasa + proteína), que
+  es cuando la digestión se alarga y la glucosa sube tarde.
+- "advertencia": una frase corta si algo del antojo merece atención, o cadena
+  vacía.
+
+No des indicaciones de dosis de insulina ni tiempos de espera antes de comer.`;
+
+const ESQUEMA_ANTOJO = {
+  type: Type.OBJECT,
+  properties: {
+    ingredientes: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          nombre: { type: Type.STRING },
+          cantidad: { type: Type.STRING },
+          estadoCrudoCocido: { type: Type.STRING, enum: ['crudo', 'cocido', 'no aplica'] },
+          proteina: { type: Type.NUMBER },
+          carbos: { type: Type.NUMBER },
+          grasa: { type: Type.NUMBER },
+        },
+        required: ['nombre', 'cantidad', 'estadoCrudoCocido', 'proteina', 'carbos', 'grasa'],
+      },
+    },
+    totales: {
+      type: Type.OBJECT,
+      properties: {
+        proteina: { type: Type.NUMBER },
+        carbos: { type: Type.NUMBER },
+        grasa: { type: Type.NUMBER },
+        calorias: { type: Type.NUMBER },
+      },
+      required: ['proteina', 'carbos', 'grasa', 'calorias'],
+    },
+    faltante: { type: Type.STRING },
+    highUGP: { type: Type.BOOLEAN },
+    advertencia: { type: Type.STRING },
+  },
+  required: ['ingredientes', 'totales', 'faltante', 'highUGP', 'advertencia'],
+};
+
+/**
+ * Calculadora inversa: parte del antojo y devuelve las cantidades que
+ * encajan en los macros que quedan de la comida.
+ */
+export async function calcularAntojo({ antojo, nombreComida, proteina, carbos, grasa, calorias }) {
+  if (!(await haySesion())) return { ok: false, mensaje: 'Sesión no válida.' };
+
+  const texto = String(antojo || '').trim().slice(0, 400);
+  if (texto.length < 3) return { ok: false, mensaje: 'Escribe qué se le antoja.' };
+
+  const p = numeroSeguro(proteina);
+  const c = numeroSeguro(carbos);
+  const g = numeroSeguro(grasa);
+  const kcal = numeroSeguro(calorias);
+
+  try {
+    const ai = cliente();
+    const respuesta = await ai.models.generateContent({
+      model: MODELO_NUTRICION,
+      contents:
+        `Comida: ${nombreComida || 'comida'}.\n` +
+        `Se le antoja: ${texto}\n` +
+        `Macros disponibles — Proteína: ${p} g, Carbohidratos: ${c} g, ` +
+        `Grasa: ${g} g, Calorías: ${kcal} kcal.`,
+      config: {
+        systemInstruction: PROMPT_ANTOJO,
+        temperature: 0.3,
+        responseMimeType: 'application/json',
+        responseSchema: ESQUEMA_ANTOJO,
+      },
+    });
+
+    const datos = extraerJson(respuesta.text);
+    if (!datos) return { ok: false, mensaje: 'El modelo no devolvió un JSON interpretable.' };
+
+    const totales = {
+      proteina: numeroSeguro(datos.totales?.proteina),
+      carbos: numeroSeguro(datos.totales?.carbos),
+      grasa: numeroSeguro(datos.totales?.grasa),
+      calorias: numeroSeguro(datos.totales?.calorias),
+    };
+
+    // El flag del modelo no se toma al pie de la letra: las UGP son
+    // aritmética pura y se recalculan aquí a partir de los totales.
+    const { ugp, alto } = calcularUGP(totales);
+
+    return {
+      ok: true,
+      ingredientes: (Array.isArray(datos.ingredientes) ? datos.ingredientes : [])
+        .slice(0, 12)
+        .map((i) => ({
+          nombre: String(i?.nombre || '').slice(0, 80),
+          cantidad: String(i?.cantidad || '').slice(0, 40),
+          estadoCrudoCocido: ['crudo', 'cocido', 'no aplica'].includes(i?.estadoCrudoCocido)
+            ? i.estadoCrudoCocido
+            : 'no aplica',
+          proteina: numeroSeguro(i?.proteina),
+          carbos: numeroSeguro(i?.carbos),
+          grasa: numeroSeguro(i?.grasa),
+        }))
+        .filter((i) => i.nombre),
+      totales,
+      faltante: String(datos.faltante || '').trim().slice(0, 250),
+      advertencia: String(datos.advertencia || '').trim().slice(0, 250),
+      ugp,
+      highUGP: alto || datos.highUGP === true,
+      modelo: MODELO_NUTRICION,
+    };
+  } catch (err) {
+    console.error('[calcularAntojo]', err);
     return { ok: false, mensaje: describirError(err), configuracion: Boolean(err?.configuracion) };
   }
 }
