@@ -1,6 +1,6 @@
 import PlanificadorDiario from '@/components/PlanificadorDiario';
 import ErrorDeConexion from '@/components/ErrorDeConexion';
-import { getHoyLocal, getConsumoDelDia, existeDailyLog } from '@/lib/queries';
+import { getHoyLocal, getConsumoDelDia, existeDailyLog, getUltimaLectura } from '@/lib/queries';
 import {
   PERFIL, calcularRequerimientos, distribuirPorComidas,
 } from '@/lib/calculosNutricionales';
@@ -14,6 +14,8 @@ export default async function PlanPage() {
   try {
     const hoy = await getHoyLocal();
     const hayTabla = await existeDailyLog();
+    // Lo que dice el sensor ahora mismo: de aquí sale la corrección de macros.
+    const lectura = await getUltimaLectura();
 
     // Sin la tabla creada todavía, la página sigue siendo útil para calcular:
     // solo se desactiva el registro y se avisa.
@@ -21,7 +23,7 @@ export default async function PlanPage() {
       ? await getConsumoDelDia(hoy)
       : { registros: [], totales: { calorias: 0, carbos: 0, proteina: 0, grasa: 0, unidades: 0 } };
 
-    datos = { hoy, hayTabla, consumo };
+    datos = { hoy, hayTabla, consumo, lectura };
   } catch (err) {
     console.error('[plan]', err);
     return <ErrorDeConexion mensaje={err.message} />;
@@ -68,6 +70,7 @@ export default async function PlanPage() {
         metas={metas}
         consumo={datos.consumo}
         hayTabla={datos.hayTabla}
+        lectura={datos.lectura}
       />
     </div>
   );

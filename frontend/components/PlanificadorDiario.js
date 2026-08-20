@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState, useTransition } from 'react';
 import {
   Sparkles, Loader2, Syringe, Target, AlertCircle, Check,
-  Sunrise, TriangleAlert, Utensils, ChefHat,
+  Sunrise, TriangleAlert, Utensils, ChefHat, Activity, TrendingDown,
 } from 'lucide-react';
 
 import { generarOpcionesComida, calcularAntojo } from '@/app/ai-actions';
@@ -12,7 +12,7 @@ import BarraProgreso from './BarraProgreso';
 import { enVentanaAlba, ALBA } from '@/lib/menus';
 import {
   COMIDAS, ICR_POR_DEFECTO, rutaA, rutaB, discrepanciaAlba,
-  calcularUGP, AVISO_UGP, UMBRAL_UGP,
+  calcularUGP, AVISO_UGP, UMBRAL_UGP, ajustarMacrosPorCGM,
 } from '@/lib/calculosNutricionales';
 import { TZ } from '@/lib/config';
 
@@ -33,12 +33,278 @@ function Macro({ etiqueta, valor, unidad = 'g', destacado }) {
 }
 
 /**
+ * Aviso de lo que hizo el interceptor glucémico.
+ *
+ * Se enseña siempre que el sensor haya cambiado el plato: si la aplicación
+ * mueve los macros por su cuenta y no lo dice, quien está cocinando no
+ * entiende por qué hoy la comida es distinta a la de ayer.
+ */
+const AvisoCGM = memo(function AvisoCGM({ cgm }) {
+  if (!cgm?.ajustado) return null;
+
+  return (
+    <div className="flex flex-col gap-2">
+      {cgm.carbosRestados > 0 && (
+        <p
+          aria-label="Ajuste por glucosa alta"
+          className="flex items-start gap-2 rounded-xl border border-alto/40 bg-alto/10 px-4 py-3 text-sm"
+        >
+          <Activity size={18} className="mt-0.5 shrink-0 text-alto" aria-hidden="true" />
+          <span>
+            <span className="font-semibold text-alto">
+              Glucosa en {cgm.glucosa} mg/dL.
+            </span>{' '}
+            Para evitar picos, restamos{' '}
+            <span className="font-mono font-bold">{cgm.carbosRestados} g</span> de
+            carbohidratos.
+            <span className="mt-1 block text-xs text-tenue">
+              Compensamos con +{cgm.proteinaAnadida} g de proteína y +{cgm.grasaAnadida} g
+              de grasa ({cgm.kcalRecuperadas} kcal) para no afectar tu superávit de volumen.
+            </span>
+          </span>
+        </p>
+      )}
+
+      {cgm.rescate > 0 && (
+        <p
+          aria-label="Ajuste por caída de glucosa"
+          className="flex items-start gap-2 rounded-xl border border-bajo/40 bg-bajo/10 px-4 py-3 text-sm"
+        >
+          <TrendingDown size={18} className="mt-0.5 shrink-0 text-bajo" aria-hidden="true" />
+          <span>
+            <span className="font-semibold text-bajo">
+              Caída detectada {cgm.tendencia?.glifo ?? ''}
+              {cgm.glucosa ? ` (${cgm.glucosa} mg/dL)` : ''}.
+            </span>{' '}
+            Se añadieron{' '}
+            <span className="font-mono font-bold">{cgm.rescate} g</span> libres de
+            carbohidratos para amortiguar.
+            <span className="mt-1 block text-xs text-tenue">
+              Estos gramos son glucosa de rescate: no se recortan por el alba ni por
+              absorción rápida.
+            </span>
+          </span>
+        </p>
+      )}
+    </div>
+  );
+});
+
+/**
+ * Una opción de menú. Va memoizada porque son tres tarjetas con listas
+ * dentro, y sin esto se volvían a dibujar enteras cada vez que se toca el
+ * ICR o las unidades, que no las afectan en nada.
+ */
+const TarjetaMenu = memo(function TarjetaMenu({ opcion, onRegistrar }) {
+  const registrar = useCallback(() => {
+    onRegistrar({
+      origen: 'menu',
+      descripcion: `${opcion.nombre} — ${opcion.ingredientes.map((i) => `${i.nombre} ${i.cantidad}`).join(', ')}`,
+      ...opcion.macros,
+    });
+  }, [opcion, onRegistrar]);
+
+  return (
+    <article className="tarjeta flex flex-col gap-2 p-4">
+      <div className="flex items-baseline justify-between gap-2">
+        <h3 className="font-semibold">
+          <span className="mr-1.5 text-xs text-tenue">Opción {opcion.opcion}</span>
+          {opcion.nombre}
+        </h3>
+        {!opcion.cuadra && (
+          <span className="shrink-0 rounded-full bg-alto/15 px-2 py-0.5 text-[10px] font-bold text-alto">
+            APROX.
+          </span>
+        )}
+      </div>
+
+      <ul className="flex flex-col gap-1">
+        {opcion.ingredientes.map((i, k) => (
+          <li key={k} className="flex items-baseline justify-between gap-2 text-sm">
+            <span>{i.nombre}</span>
+            <span className="shrink-0 font-mono text-tenue">
+              {i.cantidad}
+              {i.estadoCrudoCocido !== 'no aplica' && (
+                <span className="ml-1 text-[10px] uppercase">{i.estadoCrudoCocido}</span>
+              )}
+            </span>
+          </li>
+        ))}
+      </ul>
+
+      {opcion.preparacionCorta && (
+        <p className="text-xs leading-relaxed text-tenue">{opcion.preparacionCorta}</p>
+      )}
+
+      <div className="grid grid-cols-4 gap-1.5">
+        <Macro etiqueta="P" valor={opcion.macros.proteina} unidad="" />
+        <Macro etiqueta="C" valor={opcion.macros.carbos} unidad="" />
+        <Macro etiqueta="G" valor={opcion.macros.grasa} unidad="" />
+        <Macro etiqueta="kcal" valor={Math.round(opcion.macros.calorias)} unidad="" />
+      </div>
+
+      <button
+        type="button"
+        onClick={registrar}
+        className="mt-1 flex min-h-12 items-center justify-center gap-2 rounded-xl border border-acento/50 bg-acento/10 text-sm font-semibold text-acento active:opacity-80"
+      >
+        <Check size={16} aria-hidden="true" />
+        Registrar consumo
+      </button>
+    </article>
+  );
+});
+
+/**
+ * Barra de antojos.
+ *
+ * El texto que se escribe vive AQUÍ y no en el padre a propósito: si viviera
+ * arriba, cada letra volvería a dibujar la tarjeta del plan y las tres
+ * opciones de menú, y escribir se sentía pegajoso.
+ */
+const BarraAntojos = memo(function BarraAntojos({ macros, nombreComida, activo, onRegistrar }) {
+  const [texto, setTexto] = useState('');
+  const [cargando, setCargando] = useState(false);
+  const [resultado, setResultado] = useState(null);
+
+  // Si cambia la comida o los macros, lo calculado antes ya no corresponde.
+  const clave = `${nombreComida}|${macros?.carbos}|${macros?.proteina}|${macros?.grasa}`;
+  const [claveVista, setClaveVista] = useState(clave);
+  if (clave !== claveVista) {
+    setClaveVista(clave);
+    setResultado(null);
+  }
+
+  const pedir = useCallback(async () => {
+    if (!activo || cargando || texto.trim().length < 3) return;
+    setCargando(true);
+    setResultado(null);
+    try {
+      setResultado(await calcularAntojo({
+        antojo: texto,
+        nombreComida,
+        proteina: macros.proteina,
+        carbos: macros.carbos,
+        grasa: macros.grasa,
+        calorias: macros.calorias,
+      }));
+    } catch (err) {
+      setResultado({ ok: false, mensaje: err?.message || 'No se pudo calcular el antojo.' });
+    } finally {
+      setCargando(false);
+    }
+  }, [activo, cargando, texto, nombreComida, macros]);
+
+  const registrar = useCallback(() => {
+    onRegistrar({
+      origen: 'antojo',
+      descripcion: resultado.ingredientes
+        .map((i) => `${i.nombre} ${i.cantidad}`).join(', ').slice(0, 400),
+      ...resultado.totales,
+    });
+  }, [resultado, onRegistrar]);
+
+  return (
+    <section aria-label="Barra de antojos" className="tarjeta flex flex-col gap-3 p-4">
+      <p className="flex items-center gap-2 text-sm font-semibold">
+        <Utensils size={16} className="text-acento" aria-hidden="true" />
+        ¿Se le antoja algo?
+      </p>
+      <input
+        type="text"
+        value={texto}
+        onChange={(e) => setTexto(e.target.value)}
+        maxLength={400}
+        placeholder="Quiero comer pollo y arroz"
+        className={campo}
+      />
+      <button
+        type="button"
+        onClick={pedir}
+        disabled={!activo || cargando || texto.trim().length < 3}
+        className="flex min-h-12 items-center justify-center gap-2 rounded-xl border border-acento/50 bg-acento/10 text-sm font-semibold text-acento disabled:opacity-40"
+      >
+        {cargando ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+        {cargando ? 'Calculando cantidades...' : 'Cuadrar en mis macros'}
+      </button>
+
+      {resultado && !resultado.ok && (
+        <p className="flex items-start gap-2 rounded-xl bg-bajo/10 px-4 py-3 text-sm text-bajo">
+          <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+          {resultado.mensaje}
+        </p>
+      )}
+
+      {resultado?.ok && (
+        <div className="flex flex-col gap-3">
+          <ul className="flex flex-col gap-1">
+            {resultado.ingredientes.map((i, k) => (
+              <li key={k} className="flex items-baseline justify-between gap-2 text-sm">
+                <span>{i.nombre}</span>
+                <span className="shrink-0 font-mono text-tenue">
+                  {i.cantidad}
+                  {i.estadoCrudoCocido !== 'no aplica' && (
+                    <span className="ml-1 text-[10px] uppercase">{i.estadoCrudoCocido}</span>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+
+          <div className="grid grid-cols-4 gap-1.5">
+            <Macro etiqueta="P" valor={resultado.totales.proteina} unidad="" />
+            <Macro etiqueta="C" valor={resultado.totales.carbos} unidad="" />
+            <Macro etiqueta="G" valor={resultado.totales.grasa} unidad="" />
+            <Macro etiqueta="kcal" valor={Math.round(resultado.totales.calorias)} unidad="" />
+          </div>
+
+          {resultado.faltante && (
+            <p className="rounded-xl border border-acento/40 bg-acento/10 px-4 py-3 text-sm text-acento">
+              {resultado.faltante}
+            </p>
+          )}
+
+          {resultado.advertencia && (
+            <p className="text-xs text-tenue">{resultado.advertencia}</p>
+          )}
+
+          {resultado.highUGP && (
+            <p
+              role="alert"
+              aria-label="Alerta de unidades grasa-proteína"
+              className="rounded-xl border-2 border-bajo bg-bajo/15 px-4 py-4 text-sm font-bold leading-snug text-bajo"
+            >
+              ⚠️ {AVISO_UGP}
+              <span className="mt-1 block text-xs font-normal">
+                {resultado.ugp} UGP (umbral {UMBRAL_UGP}).
+              </span>
+            </p>
+          )}
+
+          <button
+            type="button"
+            onClick={registrar}
+            className="flex min-h-12 items-center justify-center gap-2 rounded-xl border border-acento/50 bg-acento/10 text-sm font-semibold text-acento active:opacity-80"
+          >
+            <Check size={16} aria-hidden="true" />
+            Registrar consumo
+          </button>
+        </div>
+      )}
+    </section>
+  );
+});
+
+/**
  * Planificador de volumen limpio con ruta dual.
  *
  * Ruta A: mandan los macros del plan y la insulina es la consecuencia.
  * Ruta B: manda un límite de insulina y los macros se recalculan.
+ *
+ * Encima de las dos va el interceptor glucémico: lo que diga el sensor
+ * corrige el plato ANTES de pedirle nada a la IA.
  */
-export default function PlanificadorDiario({ requerimientos, metas, consumo, hayTabla }) {
+export default function PlanificadorDiario({ requerimientos, metas, consumo, hayTabla, lectura }) {
   const [comidaId, setComidaId] = useState('desayuno');
   const [ruta, setRuta] = useState('A');
   const [icr, setIcr] = useState(ICR_POR_DEFECTO);
@@ -46,10 +312,11 @@ export default function PlanificadorDiario({ requerimientos, metas, consumo, hay
 
   const [menus, setMenus] = useState(null);
   const [cargandoMenus, setCargandoMenus] = useState(false);
-  const [antojo, setAntojo] = useState('');
-  const [resultadoAntojo, setResultadoAntojo] = useState(null);
-  const [cargandoAntojo, setCargandoAntojo] = useState(false);
   const [guardado, setGuardado] = useState(null);
+
+  // Cambiar de comida o de ruta rehace la tarjeta entera. Va en una
+  // transición para que el toque no se sienta trabado si el árbol crece.
+  const [recalculando, iniciarTransicion] = useTransition();
 
   // La ventana del alba se revisa cada minuto por si la pantalla queda abierta.
   const [ahora, setAhora] = useState(() => Date.now());
@@ -58,63 +325,68 @@ export default function PlanificadorDiario({ requerimientos, metas, consumo, hay
     return () => clearInterval(id);
   }, []);
 
-  const meta = metas.find((m) => m.id === comidaId) ?? metas[0];
-  const alba = enVentanaAlba(new Date(ahora), TZ);
+  const meta = useMemo(
+    () => metas.find((m) => m.id === comidaId) ?? metas[0],
+    [metas, comidaId]
+  );
+  const alba = useMemo(() => enVentanaAlba(new Date(ahora), TZ), [ahora]);
 
-  const plan = ruta === 'A'
-    ? rutaA({ meta, icr })
-    : rutaB({ meta, unidades, icr, alba });
+  const plan = useMemo(
+    () => (ruta === 'A' ? rutaA({ meta, icr }) : rutaB({ meta, unidades, icr, alba })),
+    [ruta, meta, icr, unidades, alba]
+  );
 
-  const discrepancia = ruta === 'A' ? discrepanciaAlba({ meta, icr, ahora: new Date(ahora), zona: TZ }) : null;
-  const ugpPlan = calcularUGP({ proteina: plan?.proteina ?? 0, grasa: plan?.grasa ?? 0 });
+  // ── Interceptor glucémico ──
+  // Se aplica sobre el plan ya calculado (que es donde vive el recorte del
+  // alba), así que el rescate entra después y queda fuera de ese recorte.
+  const cgm = useMemo(
+    () => ajustarMacrosPorCGM(plan, lectura?.glucose_value, lectura?.trend_arrow),
+    [plan, lectura]
+  );
+
+  // Lo que se le pide a la IA es SIEMPRE lo corregido por el sensor.
+  const macrosReales = useMemo(
+    () => (plan ? { proteina: cgm.proteina, carbos: cgm.carbos, grasa: cgm.grasa, calorias: cgm.calorias } : null),
+    [plan, cgm]
+  );
+
+  const discrepancia = useMemo(
+    () => (ruta === 'A' ? discrepanciaAlba({ meta, icr, ahora: new Date(ahora), zona: TZ }) : null),
+    [ruta, meta, icr, ahora]
+  );
+  const ugpPlan = useMemo(
+    () => calcularUGP({ proteina: macrosReales?.proteina ?? 0, grasa: macrosReales?.grasa ?? 0 }),
+    [macrosReales]
+  );
 
   // Al cambiar cualquier parámetro, lo calculado antes deja de ser válido.
-  const reiniciar = () => {
+  const reiniciar = useCallback(() => {
     setMenus(null);
-    setResultadoAntojo(null);
     setGuardado(null);
-  };
+  }, []);
 
-  async function generar() {
-    if (!plan || cargandoMenus) return;
+  const cambiarComida = useCallback((id) => {
+    iniciarTransicion(() => { setComidaId(id); reiniciar(); });
+  }, [reiniciar]);
+
+  const cambiarRuta = useCallback((id) => {
+    iniciarTransicion(() => { setRuta(id); reiniciar(); });
+  }, [reiniciar]);
+
+  const generar = useCallback(async () => {
+    if (!macrosReales || cargandoMenus) return;
     setCargandoMenus(true);
     setMenus(null);
     try {
-      setMenus(await generarOpcionesComida({
-        nombreComida: meta.nombre,
-        proteina: plan.proteina,
-        carbos: plan.carbos,
-        grasa: plan.grasa,
-        calorias: plan.calorias,
-      }));
+      setMenus(await generarOpcionesComida({ nombreComida: meta.nombre, ...macrosReales }));
     } catch (err) {
       setMenus({ ok: false, mensaje: err?.message || 'No se pudieron generar las opciones.' });
     } finally {
       setCargandoMenus(false);
     }
-  }
+  }, [macrosReales, cargandoMenus, meta]);
 
-  async function pedirAntojo() {
-    if (!plan || cargandoAntojo || antojo.trim().length < 3) return;
-    setCargandoAntojo(true);
-    setResultadoAntojo(null);
-    try {
-      setResultadoAntojo(await calcularAntojo({
-        antojo,
-        nombreComida: meta.nombre,
-        proteina: plan.proteina,
-        carbos: plan.carbos,
-        grasa: plan.grasa,
-        calorias: plan.calorias,
-      }));
-    } catch (err) {
-      setResultadoAntojo({ ok: false, mensaje: err?.message || 'No se pudo calcular el antojo.' });
-    } finally {
-      setCargandoAntojo(false);
-    }
-  }
-
-  async function registrar(datos) {
+  const registrar = useCallback(async (datos) => {
     setGuardado({ cargando: true });
     setGuardado(await registrarConsumo({
       comida: comidaId,
@@ -122,7 +394,7 @@ export default function PlanificadorDiario({ requerimientos, metas, consumo, hay
       unidades: ruta === 'B' ? unidades : plan?.unidadesPractica,
       ...datos,
     }));
-  }
+  }, [comidaId, plan, ruta, unidades]);
 
   return (
     <div className="flex flex-col gap-5">
@@ -143,7 +415,7 @@ export default function PlanificadorDiario({ requerimientos, metas, consumo, hay
             <button
               key={c.id}
               type="button"
-              onClick={() => { setComidaId(c.id); reiniciar(); }}
+              onClick={() => cambiarComida(c.id)}
               aria-pressed={comidaId === c.id}
               className={`flex min-h-14 flex-col items-center justify-center gap-0.5 rounded-xl border px-1 text-[11px] font-medium leading-tight transition-colors ${
                 comidaId === c.id ? 'border-acento bg-acento/15 text-acento' : 'border-borde bg-superficie text-tenue'
@@ -167,7 +439,7 @@ export default function PlanificadorDiario({ requerimientos, metas, consumo, hay
             <button
               key={id}
               type="button"
-              onClick={() => { setRuta(id); reiniciar(); }}
+              onClick={() => cambiarRuta(id)}
               aria-pressed={ruta === id}
               className={`flex flex-1 flex-col items-start gap-0.5 rounded-xl border p-3 text-left transition-colors ${
                 ruta === id ? 'border-acento bg-acento/15' : 'border-borde bg-superficie'
@@ -222,17 +494,23 @@ export default function PlanificadorDiario({ requerimientos, metas, consumo, hay
 
       {/* ------------------------------------------------ RESULTADO */}
       {plan && (
-        <section aria-label="Objetivo de la comida" className="tarjeta flex flex-col gap-3 p-4">
+        <section
+          aria-label="Objetivo de la comida"
+          aria-busy={recalculando || undefined}
+          className={`tarjeta flex flex-col gap-3 p-4 transition-opacity ${recalculando ? 'opacity-60' : ''}`}
+        >
           <div className="flex items-baseline justify-between">
             <h2 className="font-semibold">{meta.nombre}</h2>
-            <span className="font-mono text-sm text-tenue">{plan.calorias} kcal</span>
+            <span className="font-mono text-sm text-tenue">{macrosReales.calorias} kcal</span>
           </div>
 
           <div className="grid grid-cols-3 gap-2">
-            <Macro etiqueta="Proteína" valor={plan.proteina} />
-            <Macro etiqueta="Carbos" valor={plan.carbos} destacado />
-            <Macro etiqueta="Grasa" valor={plan.grasa} />
+            <Macro etiqueta="Proteína" valor={macrosReales.proteina} />
+            <Macro etiqueta="Carbos" valor={macrosReales.carbos} destacado />
+            <Macro etiqueta="Grasa" valor={macrosReales.grasa} />
           </div>
+
+          <AvisoCGM cgm={cgm} />
 
           {ruta === 'A' ? (
             <p className="flex items-center gap-2 rounded-xl bg-superficie-alta px-4 py-3 text-sm">
@@ -319,154 +597,17 @@ export default function PlanificadorDiario({ requerimientos, metas, consumo, hay
         )}
 
         {menus?.ok && menus.opciones.map((o) => (
-          <article key={o.opcion} className="tarjeta flex flex-col gap-2 p-4">
-            <div className="flex items-baseline justify-between gap-2">
-              <h3 className="font-semibold">
-                <span className="mr-1.5 text-xs text-tenue">Opción {o.opcion}</span>
-                {o.nombre}
-              </h3>
-              {!o.cuadra && (
-                <span className="shrink-0 rounded-full bg-alto/15 px-2 py-0.5 text-[10px] font-bold text-alto">
-                  APROX.
-                </span>
-              )}
-            </div>
-
-            <ul className="flex flex-col gap-1">
-              {o.ingredientes.map((i, k) => (
-                <li key={k} className="flex items-baseline justify-between gap-2 text-sm">
-                  <span>{i.nombre}</span>
-                  <span className="shrink-0 font-mono text-tenue">
-                    {i.cantidad}
-                    {i.estadoCrudoCocido !== 'no aplica' && (
-                      <span className="ml-1 text-[10px] uppercase">{i.estadoCrudoCocido}</span>
-                    )}
-                  </span>
-                </li>
-              ))}
-            </ul>
-
-            {o.preparacionCorta && (
-              <p className="text-xs leading-relaxed text-tenue">{o.preparacionCorta}</p>
-            )}
-
-            <div className="grid grid-cols-4 gap-1.5">
-              <Macro etiqueta="P" valor={o.macros.proteina} unidad="" />
-              <Macro etiqueta="C" valor={o.macros.carbos} unidad="" />
-              <Macro etiqueta="G" valor={o.macros.grasa} unidad="" />
-              <Macro etiqueta="kcal" valor={Math.round(o.macros.calorias)} unidad="" />
-            </div>
-
-            <button
-              type="button"
-              onClick={() => registrar({
-                origen: 'menu',
-                descripcion: `${o.nombre} — ${o.ingredientes.map((i) => `${i.nombre} ${i.cantidad}`).join(', ')}`,
-                ...o.macros,
-              })}
-              className="mt-1 flex min-h-12 items-center justify-center gap-2 rounded-xl border border-acento/50 bg-acento/10 text-sm font-semibold text-acento active:opacity-80"
-            >
-              <Check size={16} aria-hidden="true" />
-              Registrar consumo
-            </button>
-          </article>
+          <TarjetaMenu key={o.opcion} opcion={o} onRegistrar={registrar} />
         ))}
       </div>
 
       {/* ------------------------------------------------ ANTOJOS */}
-      <section aria-label="Barra de antojos" className="tarjeta flex flex-col gap-3 p-4">
-        <p className="flex items-center gap-2 text-sm font-semibold">
-          <Utensils size={16} className="text-acento" aria-hidden="true" />
-          ¿Se le antoja algo?
-        </p>
-        <input
-          type="text"
-          value={antojo}
-          onChange={(e) => setAntojo(e.target.value)}
-          maxLength={400}
-          placeholder="Quiero comer pollo y arroz"
-          className={campo}
-        />
-        <button
-          type="button"
-          onClick={pedirAntojo}
-          disabled={!plan || cargandoAntojo || antojo.trim().length < 3}
-          className="flex min-h-12 items-center justify-center gap-2 rounded-xl border border-acento/50 bg-acento/10 text-sm font-semibold text-acento disabled:opacity-40"
-        >
-          {cargandoAntojo ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
-          {cargandoAntojo ? 'Calculando cantidades...' : 'Cuadrar en mis macros'}
-        </button>
-
-        {resultadoAntojo && !resultadoAntojo.ok && (
-          <p className="flex items-start gap-2 rounded-xl bg-bajo/10 px-4 py-3 text-sm text-bajo">
-            <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-            {resultadoAntojo.mensaje}
-          </p>
-        )}
-
-        {resultadoAntojo?.ok && (
-          <div className="flex flex-col gap-3">
-            <ul className="flex flex-col gap-1">
-              {resultadoAntojo.ingredientes.map((i, k) => (
-                <li key={k} className="flex items-baseline justify-between gap-2 text-sm">
-                  <span>{i.nombre}</span>
-                  <span className="shrink-0 font-mono text-tenue">
-                    {i.cantidad}
-                    {i.estadoCrudoCocido !== 'no aplica' && (
-                      <span className="ml-1 text-[10px] uppercase">{i.estadoCrudoCocido}</span>
-                    )}
-                  </span>
-                </li>
-              ))}
-            </ul>
-
-            <div className="grid grid-cols-4 gap-1.5">
-              <Macro etiqueta="P" valor={resultadoAntojo.totales.proteina} unidad="" />
-              <Macro etiqueta="C" valor={resultadoAntojo.totales.carbos} unidad="" />
-              <Macro etiqueta="G" valor={resultadoAntojo.totales.grasa} unidad="" />
-              <Macro etiqueta="kcal" valor={Math.round(resultadoAntojo.totales.calorias)} unidad="" />
-            </div>
-
-            {resultadoAntojo.faltante && (
-              <p className="rounded-xl border border-acento/40 bg-acento/10 px-4 py-3 text-sm text-acento">
-                {resultadoAntojo.faltante}
-              </p>
-            )}
-
-            {resultadoAntojo.advertencia && (
-              <p className="text-xs text-tenue">{resultadoAntojo.advertencia}</p>
-            )}
-
-            {resultadoAntojo.highUGP && (
-              <p
-                role="alert"
-                aria-label="Alerta de unidades grasa-proteína"
-                className="rounded-xl border-2 border-bajo bg-bajo/15 px-4 py-4 text-sm font-bold leading-snug text-bajo"
-              >
-                ⚠️ {AVISO_UGP}
-                <span className="mt-1 block text-xs font-normal">
-                  {resultadoAntojo.ugp} UGP (umbral {UMBRAL_UGP}).
-                </span>
-              </p>
-            )}
-
-            <button
-              type="button"
-              onClick={() => registrar({
-                origen: 'antojo',
-                descripcion: resultadoAntojo.ingredientes
-                  .map((i) => `${i.nombre} ${i.cantidad}`).join(', ')
-                  .slice(0, 400),
-                ...resultadoAntojo.totales,
-              })}
-              className="flex min-h-12 items-center justify-center gap-2 rounded-xl border border-acento/50 bg-acento/10 text-sm font-semibold text-acento active:opacity-80"
-            >
-              <Check size={16} aria-hidden="true" />
-              Registrar consumo
-            </button>
-          </div>
-        )}
-      </section>
+      <BarraAntojos
+        macros={macrosReales}
+        nombreComida={meta.nombre}
+        activo={Boolean(plan)}
+        onRegistrar={registrar}
+      />
 
       {guardado && !guardado.cargando && (
         <p

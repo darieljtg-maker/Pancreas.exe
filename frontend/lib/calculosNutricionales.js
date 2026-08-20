@@ -1,4 +1,4 @@
-import { ALBA, enVentanaAlba } from './menus.js';
+import { ALBA, enVentanaAlba, normalizarTendencia, ajustePorTendencia } from './menus.js';
 
 /**
  * Motor antropométrico para volumen limpio.
@@ -275,4 +275,137 @@ export const AVISO_UGP =
 export function progreso(consumido, meta) {
   if (!(meta > 0)) return 0;
   return Math.min(100, Math.round((consumido / meta) * 100));
+}
+
+// ------------------------------------------------- INTERCEPTOR GLUCÉMICO
+
+/**
+ * Parámetros de la corrección por sensor. Todo configurable en un solo sitio.
+ *
+ * `umbral` es a partir de qué glucosa se corrige; `objetivo` es hacia dónde.
+ * No son el mismo número a propósito: por debajo de 140 no se toca nada, pero
+ * cuando se corrige se corrige hasta 120, igual que un bolo de corrección.
+ * Eso implica un escalón: a 140 no se resta nada y a 141 se restan ~7 g.
+ */
+export const CGM = {
+  umbralHiper: 140,      // mg/dL a partir de los cuales se recorta
+  objetivo: 120,         // mg/dL hacia los que se corrige
+  escalonMgDl: 30,       // por cada 30 mg/dL...
+  gramosPorEscalon: 10,  // ...se restan 10 g de carbohidratos
+  umbralHipo: 80,        // mg/dL por debajo de los cuales hay rescate
+  rescateHipo: 15,       // g de rescate por hipoglucemia
+  maxRecorte: 0.6,       // nunca quitar más del 60% de los carbos del plato
+};
+
+/**
+ * Interceptor glucémico: corrige los macros de la comida con lo que dice el
+ * sensor JUSTO ANTES de pedirle el menú a la IA.
+ *
+ * Dos correcciones, que pueden coincidir (glucosa alta pero bajando rápido):
+ *
+ *   Recorte por hiperglucemia. Se restan carbohidratos, y las calorías que
+ *   se pierden se devuelven como grasa y proteína, mitad y mitad. Esto no es
+ *   cosmético: el paciente está en volumen y perder el superávit en cada
+ *   comida alta arruinaría el objetivo del plan.
+ *
+ *   Rescate por hipoglucemia o por flecha de bajada. Se suman carbohidratos
+ *   libres. Estos gramos son INTOCABLES: se devuelven en un campo aparte y
+ *   se suman al final, después de cualquier recorte porcentual (alba, índice
+ *   glucémico). Son glucosa de emergencia, no comida negociable.
+ *
+ * Cuando las dos aplican a la vez se compensan solas en el total, pero cada
+ * una sigue visible por separado para poder explicarla en pantalla.
+ *
+ * Este interceptor sesga una comida; no sustituye al protocolo de hipo
+ * agudo (`calcularRescate` en lib/menus.js), que es otra cosa.
+ */
+export function ajustarMacrosPorCGM(macrosBase, glucosaActual, tendencia, sensibilidad = CGM) {
+  const s = { ...CGM, ...(sensibilidad || {}) };
+
+  const base = {
+    proteina: Number(macrosBase?.proteina) || 0,
+    carbos: Number(macrosBase?.carbos) || 0,
+    grasa: Number(macrosBase?.grasa) || 0,
+    calorias: Number(macrosBase?.calorias) || 0,
+  };
+
+  const sinCambios = {
+    ...base,
+    ajustado: false,
+    motivos: [],
+    glucosa: null,
+    tendencia: null,
+    carbosRestados: 0,
+    rescate: 0,
+    kcalRecuperadas: 0,
+    proteinaAnadida: 0,
+    grasaAnadida: 0,
+    base,
+  };
+
+  const glucosa = Number(glucosaActual);
+  const flecha = normalizarTendencia(tendencia);
+  const hayGlucosa = Number.isFinite(glucosa) && glucosa > 0;
+
+  // Sin lectura del sensor no se inventa nada: se devuelve el plan tal cual.
+  if (!hayGlucosa && !flecha) return sinCambios;
+
+  // ── 1. Recorte por hiperglucemia ──
+  let carbosRestados = 0;
+  if (hayGlucosa && glucosa > s.umbralHiper) {
+    const exceso = glucosa - s.objetivo;
+    const ideal = (exceso / s.escalonMgDl) * s.gramosPorEscalon;
+    // Tope de seguridad: por muy alta que esté, la comida no se vacía.
+    carbosRestados = redondear(Math.min(ideal, base.carbos * s.maxRecorte));
+    carbosRestados = Math.max(0, carbosRestados);
+  }
+
+  // ── 2. Rescate: por hipoglucemia y/o por flecha de bajada ──
+  const extraFlecha = ajustePorTendencia(tendencia);
+  const rescate = hayGlucosa && glucosa < s.umbralHipo
+    // No se acumulan: se toma el mayor de los dos. Sumarlos metería una
+    // carga de carbohidratos grande y sin cubrir en una sola comida.
+    ? Math.max(s.rescateHipo, extraFlecha)
+    : extraFlecha;
+
+  if (carbosRestados === 0 && rescate === 0) {
+    return { ...sinCambios, glucosa: hayGlucosa ? glucosa : null, tendencia: flecha };
+  }
+
+  // ── 3. Compensación calórica del recorte ──
+  // Solo se compensa lo recortado. El rescate es glucosa de emergencia y sus
+  // calorías van encima a propósito: no se le quita comida por rescatarlo.
+  const kcalRecuperadas = carbosRestados * KCAL.carbohidrato;
+  const proteinaAnadida = redondear((kcalRecuperadas / 2) / KCAL.proteina);
+  const grasaAnadida = redondear((kcalRecuperadas / 2) / KCAL.grasa);
+
+  // ── 4. Macros finales ──
+  // El rescate se suma AL FINAL, ya fuera del alcance de cualquier recorte.
+  const carbosTrasRecorte = Math.max(0, base.carbos - carbosRestados);
+  const carbos = redondear(carbosTrasRecorte + rescate);
+  const proteina = redondear(base.proteina + proteinaAnadida);
+  const grasa = redondear(base.grasa + grasaAnadida);
+
+  const motivos = [];
+  if (carbosRestados > 0) motivos.push('hiper');
+  if (rescate > 0) motivos.push('rescate');
+
+  return {
+    proteina,
+    carbos,
+    grasa,
+    calorias: redondear(
+      carbos * KCAL.carbohidrato + proteina * KCAL.proteina + grasa * KCAL.grasa, 0
+    ),
+    ajustado: true,
+    motivos,
+    glucosa: hayGlucosa ? glucosa : null,
+    tendencia: flecha,
+    carbosRestados,
+    rescate,
+    kcalRecuperadas: redondear(kcalRecuperadas, 0),
+    proteinaAnadida,
+    grasaAnadida,
+    base,
+  };
 }

@@ -1,5 +1,6 @@
 'use client';
 
+import { useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { ChevronLeft, ChevronRight, CalendarDays } from 'lucide-react';
 
@@ -21,10 +22,19 @@ function sumarDias(fecha, dias) {
 export default function NavegadorDias({ fecha, hoy, primerDia }) {
   const router = useRouter();
 
+  // La navegación va dentro de una transición a propósito. Sin ella, Next
+  // enseña el esqueleto de `loading.js` y estos mismos botones desaparecen
+  // mientras carga el día nuevo: se pierde el sitio y no se puede seguir
+  // pulsando. Con la transición, los controles se quedan en pantalla
+  // atenuados hasta que el día llega.
+  const [cargando, iniciarTransicion] = useTransition();
+
   const ir = (destino) => {
     if (!destino || destino > hoy) return;
     if (primerDia && destino < primerDia) return;
-    router.push(destino === hoy ? '/historial' : `/historial?fecha=${destino}`);
+    iniciarTransicion(() => {
+      router.push(destino === hoy ? '/historial' : `/historial?fecha=${destino}`);
+    });
   };
 
   const anterior = sumarDias(fecha, -1);
@@ -38,8 +48,8 @@ export default function NavegadorDias({ fecha, hoy, primerDia }) {
     'flex size-12 shrink-0 items-center justify-center rounded-xl border border-borde bg-superficie transition-colors active:bg-superficie-alta disabled:opacity-30';
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-center gap-2">
+    <div className="flex flex-col gap-2" aria-busy={cargando || undefined}>
+      <div className={`flex items-center gap-2 transition-opacity ${cargando ? 'opacity-60' : ''}`}>
         <button
           type="button"
           onClick={() => ir(anterior)}

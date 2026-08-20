@@ -1,6 +1,6 @@
 import { CalendarOff } from 'lucide-react';
 
-import GlucoseChart from '@/components/GlucoseChart';
+import GraficaGlucosa from '@/components/GraficaGlucosa';
 import Timeline from '@/components/Timeline';
 import AuditoriaSemanal from '@/components/AuditoriaSemanal';
 import NavegadorDias from '@/components/NavegadorDias';
@@ -133,7 +133,7 @@ export default async function HistorialPage({ searchParams }) {
           </section>
 
           <section aria-label="Curva de glucosa del día">
-            <GlucoseChart datos={datosGrafica} />
+            <GraficaGlucosa datos={datosGrafica} />
             <p className="mt-2 text-center text-xs text-tenue">
               {stats.lecturas} lecturas · rango objetivo 70–180 mg/dL
             </p>
