@@ -9,7 +9,11 @@ import { query, INICIO_DEL_DIA, TZ } from './db';
 /** Última lectura del sensor. Es la que manda en el Hero del dashboard. */
 export async function getUltimaLectura() {
   const { rows } = await query(
-    `SELECT glucose_value, trend_arrow, "timestamp"
+    `SELECT glucose_value, trend_arrow, "timestamp",
+            -- La antigüedad se calcula en SQL, no en JavaScript: el reloj de
+            -- la base es el mismo que escribió la lectura, así que no hay
+            -- desfase posible entre el servidor y la base.
+            round(extract(epoch FROM (now() - "timestamp")) / 60)::int AS minutos
        FROM cgm_readings
       ORDER BY "timestamp" DESC
       LIMIT 1`

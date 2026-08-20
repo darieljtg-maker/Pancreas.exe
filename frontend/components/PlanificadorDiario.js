@@ -12,7 +12,7 @@ import BarraProgreso from './BarraProgreso';
 import { enVentanaAlba, ALBA } from '@/lib/menus';
 import {
   COMIDAS, ICR_POR_DEFECTO, rutaA, rutaB, discrepanciaAlba,
-  calcularUGP, AVISO_UGP, UMBRAL_UGP, ajustarMacrosPorCGM,
+  calcularUGP, AVISO_UGP, UMBRAL_UGP, ajustarMacrosPorCGM, estadoLectura,
 } from '@/lib/calculosNutricionales';
 import { TZ } from '@/lib/config';
 
@@ -31,6 +31,68 @@ function Macro({ etiqueta, valor, unidad = 'g', destacado }) {
     </div>
   );
 }
+
+/**
+ * Qué glucosa se usó para calcular este plato, se haya ajustado o no.
+ *
+ * Va siempre visible. Cuando Gaelito está en rango el interceptor no cambia
+ * nada, y sin esta línea "no ajustó" era indistinguible de "no funciona":
+ * no había forma de saber si la aplicación había mirado el sensor siquiera.
+ */
+const LineaSensor = memo(function LineaSensor({ estado, ajustado }) {
+  const hace = (min) => {
+    if (min == null) return '';
+    if (min <= 1) return 'ahora mismo';
+    if (min < 60) return `hace ${min} min`;
+    const h = Math.floor(min / 60);
+    return `hace ${h} h ${min % 60 ? `${min % 60} min` : ''}`.trim();
+  };
+
+  if (!estado.hay) {
+    return (
+      <p className="flex items-center gap-2 rounded-xl bg-superficie-alta px-4 py-2.5 text-xs text-tenue">
+        <Activity size={14} className="shrink-0" aria-hidden="true" />
+        Sin lectura del sensor: se usa el plan tal cual.
+      </p>
+    );
+  }
+
+  if (!estado.vigente) {
+    return (
+      <p
+        aria-label="Lectura del sensor caducada"
+        className="flex items-start gap-2 rounded-xl border border-alto/40 bg-alto/10 px-4 py-2.5 text-xs"
+      >
+        <Activity size={14} className="mt-0.5 shrink-0 text-alto" aria-hidden="true" />
+        <span>
+          <span className="font-semibold text-alto">
+            Última lectura {hace(estado.minutos)}: {estado.glucosa} mg/dL.
+          </span>{' '}
+          <span className="text-tenue">
+            Demasiado vieja para ajustar la comida; se usa el plan tal cual. Revisa que el
+            sensor esté conectado.
+          </span>
+        </span>
+      </p>
+    );
+  }
+
+  return (
+    <p
+      aria-label="Glucosa usada para el cálculo"
+      className="flex items-center gap-2 rounded-xl bg-superficie-alta px-4 py-2.5 text-xs text-tenue"
+    >
+      <Activity size={14} className="shrink-0 text-acento" aria-hidden="true" />
+      <span>
+        Sensor:{' '}
+        <span className="font-mono font-bold text-texto">{estado.glucosa} mg/dL</span>{' '}
+        {estado.tendencia?.glifo ?? ''} {hace(estado.minutos)}
+        {' · '}
+        {ajustado ? 'la comida se ajustó' : 'en rango, sin ajuste'}
+      </span>
+    </p>
+  );
+});
 
 /**
  * Aviso de lo que hizo el interceptor glucémico.
@@ -339,9 +401,16 @@ export default function PlanificadorDiario({ requerimientos, metas, consumo, hay
   // ── Interceptor glucémico ──
   // Se aplica sobre el plan ya calculado (que es donde vive el recorte del
   // alba), así que el rescate entra después y queda fuera de ese recorte.
+  // Una lectura vieja no ajusta nada: recortar comida con la glucosa de
+  // hace dos horas es peor que no recortarla.
+  const sensor = useMemo(() => estadoLectura(lectura), [lectura]);
   const cgm = useMemo(
-    () => ajustarMacrosPorCGM(plan, lectura?.glucose_value, lectura?.trend_arrow),
-    [plan, lectura]
+    () => ajustarMacrosPorCGM(
+      plan,
+      sensor.vigente ? sensor.glucosa : null,
+      sensor.vigente ? lectura?.trend_arrow : null
+    ),
+    [plan, sensor, lectura]
   );
 
   // Lo que se le pide a la IA es SIEMPRE lo corregido por el sensor.
@@ -503,6 +572,8 @@ export default function PlanificadorDiario({ requerimientos, metas, consumo, hay
             <h2 className="font-semibold">{meta.nombre}</h2>
             <span className="font-mono text-sm text-tenue">{macrosReales.calorias} kcal</span>
           </div>
+
+          <LineaSensor estado={sensor} ajustado={cgm.ajustado} />
 
           <div className="grid grid-cols-3 gap-2">
             <Macro etiqueta="Proteína" valor={macrosReales.proteina} />

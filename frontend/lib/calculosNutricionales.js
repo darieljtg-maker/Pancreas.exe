@@ -298,6 +298,39 @@ export const CGM = {
 };
 
 /**
+ * Cuántos minutos puede tener una lectura para seguir sirviendo.
+ *
+ * El Libre 2 manda un dato cada 5 minutos. Si la última tiene más de 20, o
+ * el sensor se despegó o el worker de sincronización está caído: en
+ * cualquiera de los dos casos, esa glucosa ya no dice dónde está Gaelito
+ * AHORA y no se puede recortar comida con ella.
+ */
+export const MAX_ANTIGUEDAD_MIN = 20;
+
+/**
+ * Traduce la última lectura a un estado que la interfaz pueda enseñar.
+ *
+ * `minutos` lo calcula la base de datos (ver getUltimaLectura), no el reloj
+ * del navegador. Si no viniera, se asume vigente: es mejor ajustar con una
+ * lectura de antigüedad desconocida que ignorar el sensor por completo.
+ */
+export function estadoLectura(lectura, maxMin = MAX_ANTIGUEDAD_MIN) {
+  const glucosa = Number(lectura?.glucose_value);
+  if (!Number.isFinite(glucosa) || glucosa <= 0) {
+    return { hay: false, vigente: false, minutos: null, glucosa: null, tendencia: null };
+  }
+
+  const minutos = Number.isFinite(Number(lectura?.minutos)) ? Number(lectura.minutos) : null;
+  return {
+    hay: true,
+    vigente: minutos == null || minutos <= maxMin,
+    minutos,
+    glucosa,
+    tendencia: normalizarTendencia(lectura?.trend_arrow),
+  };
+}
+
+/**
  * Interceptor glucémico: corrige los macros de la comida con lo que dice el
  * sensor JUSTO ANTES de pedirle el menú a la IA.
  *
