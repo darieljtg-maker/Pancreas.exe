@@ -8,6 +8,7 @@ import { getContextoVigilante, getContextoSemanal } from '@/lib/queries';
 import { hora, fechaLarga } from '@/lib/glucosa';
 import { normalizarTendencia, CLASIFICACIONES_IG } from '@/lib/menus';
 import { calcularUGP } from '@/lib/calculosNutricionales';
+import { validarCurvaPronostico } from '@/lib/pronostico.mjs';
 
 /**
  * Análisis con Gemini.
@@ -166,9 +167,12 @@ export async function pronosticoCorto() {
   try {
     const contexto = await getContextoVigilante();
 
-    if (contexto.lecturas.length < 3) {
-      return { ok: true, estable: true, mensaje: 'Aún no hay lecturas suficientes.' };
+    const curva = validarCurvaPronostico(contexto.lecturas);
+    if (!curva.ok) {
+      cacheVigilante = null;
+      return { ok: false, mensaje: curva.mensaje };
     }
+    contexto.lecturas = curva.lecturas;
 
     // Mismo timestamp que la vez anterior = mismos datos = misma respuesta.
     // Se devuelve la guardada sin tocar la API.
@@ -189,6 +193,13 @@ export async function pronosticoCorto() {
         maxOutputTokens: 400,
       },
     });
+
+    // Una respuesta lenta tampoco puede presentar un dato ya caducado.
+    const curvaAlResponder = validarCurvaPronostico(contexto.lecturas);
+    if (!curvaAlResponder.ok) {
+      cacheVigilante = null;
+      return { ok: false, mensaje: curvaAlResponder.mensaje };
+    }
 
     const texto = (respuesta.text || '').trim();
 
