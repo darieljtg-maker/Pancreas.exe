@@ -1,75 +1,81 @@
-'use client';
-
-import { useCallback, useState, useTransition } from 'react';
-import { UtensilsCrossed, Syringe, Droplets, Footprints } from 'lucide-react';
-
-import ComidaForm from './forms/ComidaForm';
-import InsulinaForm from './forms/InsulinaForm';
-import AguaForm from './forms/AguaForm';
-import ActividadForm from './forms/ActividadForm';
-
-const PESTANAS = [
-  { id: 'comida', etiqueta: 'Comida', Icono: UtensilsCrossed, Form: ComidaForm },
-  { id: 'insulina', etiqueta: 'Insulina', Icono: Syringe, Form: InsulinaForm },
-  { id: 'agua', etiqueta: 'Agua', Icono: Droplets, Form: AguaForm },
-  { id: 'actividad', etiqueta: 'Actividad', Icono: Footprints, Form: ActividadForm },
+"use client";
+import { useState, useRef } from "react";
+import { UtensilsCrossed, Syringe } from "lucide-react";
+import ComidaForm from "./forms/ComidaForm";
+import InsulinaForm from "./forms/InsulinaForm";
+const tabs = [
+  { id: "comida", label: "Comida", Icon: UtensilsCrossed },
+  { id: "insulina", label: "Insulina", Icon: Syringe },
 ];
-
-export default function RegistroTabs({ inicial = 'comida', glucosaActual, tendenciaActual }) {
+export default function RegistroTabs({
+  inicial = "comida",
+  lectura,
+  pauta,
+  catalogo,
+}) {
   const [activa, setActiva] = useState(inicial);
-
-  // Cambiar de pestaña monta un formulario entero (el de comida arrastra la
-  // calculadora de porciones). En una transición, React puede interrumpir ese
-  // renderizado si llega otro toque, y la barra de pestañas nunca se queda
-  // muda esperando.
-  const [cambiando, iniciarTransicion] = useTransition();
-  const cambiar = useCallback((id) => {
-    iniciarTransicion(() => setActiva(id));
-  }, []);
-
-  const actual = PESTANAS.find((p) => p.id === activa) ?? PESTANAS[0];
-  const { Form } = actual;
-
-  // Solo el formulario de comida usa la glucosa (para calcular la porción).
-  const props = actual.id === 'comida' ? { glucosaActual, tendenciaActual } : {};
-
+  const refs = useRef([]);
+  function teclado(e, i) {
+    let n = null;
+    if (e.key === "ArrowRight") n = (i + 1) % 2;
+    if (e.key === "ArrowLeft") n = (i + 1) % 2;
+    if (e.key === "Home") n = 0;
+    if (e.key === "End") n = 1;
+    if (n !== null) {
+      e.preventDefault();
+      setActiva(tabs[n].id);
+      refs.current[n]?.focus();
+    }
+  }
   return (
     <div className="flex flex-col gap-5">
-      <div role="tablist" aria-label="Tipo de registro" className="grid grid-cols-4 gap-2">
-        {PESTANAS.map(({ id, etiqueta, Icono }) => {
-          const activo = id === activa;
-          return (
-            <button
-              key={id}
-              role="tab"
-              type="button"
-              aria-selected={activo}
-              aria-controls={`panel-${id}`}
-              onClick={() => cambiar(id)}
-              className={`flex min-h-16 flex-col items-center justify-center gap-1 rounded-xl border text-xs font-medium transition-colors ${
-                activo
-                  ? 'border-acento bg-acento/15 text-acento'
-                  : 'border-borde bg-superficie text-tenue'
-              }`}
-            >
-              <Icono size={20} aria-hidden="true" />
-              {etiqueta}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Se monta solo el formulario activo: cambiar de pestaña limpia lo
-          escrito, que es lo que quieres para no mezclar dos registros. */}
       <div
-        role="tabpanel"
-        id={`panel-${actual.id}`}
-        key={actual.id}
-        aria-busy={cambiando || undefined}
-        className={cambiando ? 'opacity-60 transition-opacity' : 'transition-opacity'}
+        role="tablist"
+        aria-label="Tipo de registro"
+        className="grid grid-cols-2 gap-2 rounded-2xl border border-borde bg-superficie p-2"
       >
-        <Form {...props} />
+        {tabs.map(({ id, label, Icon }, i) => (
+          <button
+            ref={(el) => {
+              refs.current[i] = el;
+            }}
+            id={"tab-" + id}
+            key={id}
+            type="button"
+            role="tab"
+            aria-controls={"panel-" + id}
+            aria-selected={activa === id}
+            tabIndex={activa === id ? 0 : -1}
+            onKeyDown={(e) => teclado(e, i)}
+            onClick={() => setActiva(id)}
+            className={
+              "flex min-h-14 items-center justify-center gap-2 rounded-xl font-semibold " +
+              (activa === id ? "bg-acento text-fondo" : "text-tenue")
+            }
+          >
+            <Icon size={20} aria-hidden="true" />
+            {label}
+          </button>
+        ))}
       </div>
+      <section
+        id="panel-comida"
+        role="tabpanel"
+        aria-labelledby="tab-comida"
+        hidden={activa !== "comida"}
+        className="tarjeta p-5 sm:p-6"
+      >
+        <ComidaForm lectura={lectura} pauta={pauta} catalogo={catalogo} />
+      </section>
+      <section
+        id="panel-insulina"
+        role="tabpanel"
+        aria-labelledby="tab-insulina"
+        hidden={activa !== "insulina"}
+        className="tarjeta p-5 sm:p-6"
+      >
+        <InsulinaForm pauta={pauta} />
+      </section>
     </div>
   );
 }
