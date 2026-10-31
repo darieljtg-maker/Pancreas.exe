@@ -134,7 +134,7 @@ export function estadoSensor(lectura, ahora = Date.now()) {
     return {
       estado: "antigua",
       mensaje:
-        "Lectura de más de 15 minutos. Actualiza el sensor antes de usar el asistente.",
+        "Lectura de más de 15 minutos. Actualiza el sensor para conocer la glucosa reciente; el conteo nutricional sigue disponible.",
     };
   if (valor < 70)
     return {
@@ -146,12 +146,13 @@ export function estadoSensor(lectura, ahora = Date.now()) {
     return {
       estado: "alta",
       mensaje:
-        "Glucosa de 250 mg/dL o más. Sigue su plan médico para hiperglucemia y cetonas. Esta app no repartirá la dosis fija ni ajustará porciones mientras falten los parámetros del protocolo.",
+        "Glucosa de 250 mg/dL o más. Sigue su plan médico para hiperglucemia y cetonas. La consulta de alimentos no calcula una corrección de insulina.",
     };
   if (valor > 180)
     return {
       estado: "fuera-rango",
-      mensaje: "Glucosa por encima de 180 mg/dL. Para proponer porciones ajustadas falta el objetivo de comida indicado por su equipo médico. Puedes contar y registrar los alimentos reales.",
+      mensaje:
+        "Glucosa por encima del límite general de 180 mg/dL. Puedes consultar alimentos y contar sus nutrientes; el conteo no calcula una corrección de insulina.",
     };
   return {
     estado: "reciente",
