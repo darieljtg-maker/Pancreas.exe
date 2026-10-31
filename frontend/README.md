@@ -37,6 +37,12 @@ recalcula todos los nutrientes, y vuelve a consultar sensor y pauta después de 
 No se aceptan nutrientes inventados por el modelo ni equivalencias de marcas no verificadas.
 El catálogo no pretende cubrir todos los alimentos. Para productos ausentes se admite registro manual según etiqueta.
 
+La consulta de alimentos está disponible con cualquier glucosa, sin lectura reciente, sin pauta y para colaciones.
+Fuera de las condiciones de la referencia prescrita devuelve fichas por 100 g, no una porción indicada para comer.
+Los pesos se normalizan en el servidor y el usuario introduce las cantidades reales. No se usa una dosis fija
+para calcular un plato con glucosa alta o baja ni se descuentan carbohidratos para corregirla.
+Si el sensor caduca o cambia de rango durante la llamada, la respuesta vuelve al conteo neutral por 100 g.
+
 Las ideas priorizan verduras y proteína y evitan azúcar añadida. La atención de hipoglucemia sigue su protocolo separado.
 No se convierten grasa/proteína en insulina extra. El conteo no garantiza una glucosa posterior.
 
