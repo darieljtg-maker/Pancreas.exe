@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 import {
   ResponsiveContainer,
@@ -10,16 +10,25 @@ import {
   Tooltip,
   ReferenceArea,
   ReferenceLine,
-} from 'recharts';
-import { RANGO } from '@/lib/config';
+} from "recharts";
+import { RANGO } from "@/lib/config";
 
-const COLORES = { bajo: '#FF4D4F', rango: '#22C55E', alto: '#F5A524', linea: '#38BDF8' };
+const COLORES = {
+  bajo: "#FF4D4F",
+  rango: "#22C55E",
+  alto: "#F5A524",
+  linea: "#38BDF8",
+};
 
 function TooltipPersonalizado({ active, payload }) {
   if (!active || !payload?.length) return null;
   const p = payload[0].payload;
   const color =
-    p.valor < RANGO.bajo ? COLORES.bajo : p.valor > RANGO.alto ? COLORES.alto : COLORES.rango;
+    p.valor < RANGO.bajo
+      ? COLORES.bajo
+      : p.valor > RANGO.alto
+        ? COLORES.alto
+        : COLORES.rango;
 
   return (
     <div className="rounded-lg border border-borde bg-superficie-alta px-3 py-2 text-sm shadow-lg">
@@ -49,11 +58,18 @@ export default function GlucoseChart({ datos }) {
   return (
     <div className="tarjeta p-3 pt-5">
       <ResponsiveContainer width="100%" height={260}>
-        <AreaChart data={datos} margin={{ top: 4, right: 8, left: -12, bottom: 0 }}>
+        <AreaChart
+          data={datos}
+          margin={{ top: 4, right: 8, left: -12, bottom: 0 }}
+        >
           <defs>
             <linearGradient id="areaGlucosa" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor={COLORES.linea} stopOpacity={0.35} />
-              <stop offset="100%" stopColor={COLORES.linea} stopOpacity={0.02} />
+              <stop
+                offset="100%"
+                stopColor={COLORES.linea}
+                stopOpacity={0.02}
+              />
             </linearGradient>
           </defs>
 
@@ -64,17 +80,31 @@ export default function GlucoseChart({ datos }) {
             fill={COLORES.rango}
             fillOpacity={0.09}
           />
-          <ReferenceLine y={RANGO.bajo} stroke={COLORES.bajo} strokeDasharray="4 4" strokeOpacity={0.6} />
-          <ReferenceLine y={RANGO.alto} stroke={COLORES.alto} strokeDasharray="4 4" strokeOpacity={0.6} />
+          <ReferenceLine
+            y={RANGO.bajo}
+            stroke={COLORES.bajo}
+            strokeDasharray="4 4"
+            strokeOpacity={0.6}
+          />
+          <ReferenceLine
+            y={RANGO.alto}
+            stroke={COLORES.alto}
+            strokeDasharray="4 4"
+            strokeOpacity={0.6}
+          />
 
-          <CartesianGrid stroke="#253140" strokeOpacity={0.4} vertical={false} />
+          <CartesianGrid
+            stroke="#253140"
+            strokeOpacity={0.4}
+            vertical={false}
+          />
 
           <XAxis
             dataKey="hora"
             type="number"
             domain={[0, 24]}
             ticks={[0, 6, 12, 18, 24]}
-            tickFormatter={(h) => `${String(h).padStart(2, '0')}h`}
+            tickFormatter={(h) => `${String(h).padStart(2, "0")}h`}
             stroke="#8A98A6"
             fontSize={11}
             tickLine={false}
@@ -90,15 +120,19 @@ export default function GlucoseChart({ datos }) {
             width={38}
           />
 
-          <Tooltip content={<TooltipPersonalizado />} cursor={{ stroke: '#8A98A6', strokeWidth: 1 }} />
+          <Tooltip
+            content={<TooltipPersonalizado />}
+            cursor={{ stroke: "#8A98A6", strokeWidth: 1 }}
+          />
 
           <Area
-            type="monotone"
+            type="linear"
             dataKey="valor"
             stroke={COLORES.linea}
             strokeWidth={2}
             fill="url(#areaGlucosa)"
             dot={false}
+            connectNulls={false}
             activeDot={{ r: 4, fill: COLORES.linea }}
             isAnimationActive={false}
           />

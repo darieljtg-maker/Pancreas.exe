@@ -1,54 +1,47 @@
-import { Syringe, UtensilsCrossed, Droplets, Footprints } from 'lucide-react';
-import { hora, haceCuanto } from '@/lib/glucosa';
-
-function Tarjeta({ Icono, titulo, valor, detalle, pie }) {
-  return (
-    <div className="tarjeta flex flex-col gap-1 p-4">
-      <div className="flex items-center gap-2 text-tenue">
-        <Icono size={16} aria-hidden="true" />
-        <span className="text-xs font-medium uppercase tracking-wide">{titulo}</span>
-      </div>
-      <p className="text-lg font-semibold leading-tight">{valor}</p>
-      {detalle && <p className="line-clamp-2 text-sm text-tenue">{detalle}</p>}
-      {pie && <p className="mt-auto pt-1 text-xs text-tenue">{pie}</p>}
-    </div>
-  );
-}
-
+import { Syringe, UtensilsCrossed } from "lucide-react";
+import { hora, haceCuanto } from "@/lib/glucosa";
 export default function QuickStats({ insulina, comida, totales }) {
   return (
-    <section className="flex flex-col gap-3" aria-label="Resumen del día">
-      <div className="grid grid-cols-2 gap-3">
-        <Tarjeta
-          Icono={Syringe}
-          titulo="Última insulina"
-          valor={insulina ? `${Number(insulina.units)} U` : 'Sin registro'}
-          detalle={insulina ? insulina.type : 'Registra la primera dosis'}
-          pie={insulina ? `${hora(insulina.timestamp)} · ${haceCuanto(insulina.timestamp)}` : null}
-        />
-        <Tarjeta
-          Icono={UtensilsCrossed}
-          titulo="Última comida"
-          valor={comida ? `${Number(comida.carbs_grams)} g` : 'Sin registro'}
-          detalle={comida ? comida.description : 'Registra la primera comida'}
-          pie={comida ? `${comida.meal_type} · ${hora(comida.timestamp)}` : null}
-        />
-      </div>
-
-      <div className="tarjeta grid grid-cols-4 divide-x divide-borde p-1">
-        {[
-          { Icono: UtensilsCrossed, valor: `${totales.carbos}`, unidad: 'g carbos' },
-          { Icono: Syringe, valor: `${totales.unidades}`, unidad: 'U hoy' },
-          { Icono: Droplets, valor: `${totales.aguaMl}`, unidad: 'ml agua' },
-          { Icono: Footprints, valor: `${totales.minutosActividad}`, unidad: 'min activo' },
-        ].map(({ Icono, valor, unidad }) => (
-          <div key={unidad} className="flex flex-col items-center gap-0.5 px-1 py-3">
-            <Icono size={14} className="text-tenue" aria-hidden="true" />
-            <span className="font-mono text-base font-semibold tabular-nums">{valor}</span>
-            <span className="text-center text-[10px] leading-tight text-tenue">{unidad}</span>
-          </div>
-        ))}
-      </div>
+    <section
+      aria-label="Últimos registros"
+      className="grid gap-3 sm:grid-cols-2"
+    >
+      {[
+        {
+          Icon: Syringe,
+          label: "Última insulina registrada",
+          value: insulina
+            ? Number(insulina.units) + " U · " + insulina.type
+            : "Sin dosis registrada",
+          detail: insulina
+            ? hora(insulina.timestamp) + " · " + haceCuanto(insulina.timestamp)
+            : "Los registros no confirman ausencia de insulina activa.",
+        },
+        {
+          Icon: UtensilsCrossed,
+          label: "Última comida registrada",
+          value: comida
+            ? Number(comida.carbs_grams) + " g CH · " + comida.meal_type
+            : "Sin comida registrada",
+          detail: comida
+            ? hora(comida.timestamp) + " · " + haceCuanto(comida.timestamp)
+            : "Añade los alimentos y sus porciones reales.",
+        },
+      ].map(({ Icon, label, value, detail }) => (
+        <div key={label} className="tarjeta p-4">
+          <p className="flex items-center gap-2 text-xs text-tenue">
+            <Icon size={16} aria-hidden="true" />
+            {label}
+          </p>
+          <p className="mt-3 font-semibold">{value}</p>
+          <p className="mt-2 text-xs leading-relaxed text-tenue">{detail}</p>
+        </div>
+      ))}
+      <p className="text-sm text-tenue sm:col-span-2">
+        Hoy:{" "}
+        <span className="text-texto">{totales.carbos} g CH registrados</span> ·{" "}
+        <span className="text-texto">{totales.unidades} U registradas</span>
+      </p>
     </section>
   );
 }

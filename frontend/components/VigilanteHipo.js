@@ -1,8 +1,8 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import AlertaHipoglucemia from './AlertaHipoglucemia';
-import { UMBRAL_HIPO } from '@/lib/menus';
+import { useEffect, useState } from "react";
+import AlertaHipoglucemia from "./AlertaHipoglucemia";
+import { UMBRAL_HIPO } from "@/lib/menus";
 
 /**
  * Decide cuándo salta el protocolo de hipoglucemia en el dashboard.
@@ -13,14 +13,27 @@ import { UMBRAL_HIPO } from '@/lib/menus';
  */
 export default function VigilanteHipo({ glucosa, timestamp }) {
   const [descartada, setDescartada] = useState(null);
+  const [ahora, setAhora] = useState(() => Date.now());
+  useEffect(() => {
+    const reloj = setInterval(() => setAhora(Date.now()), 60000);
+    return () => clearInterval(reloj);
+  }, []);
 
   const valor = glucosa != null ? Number(glucosa) : null;
   const clave = timestamp ? String(timestamp) : null;
 
   const debeAbrirse =
-    Number.isFinite(valor) && valor < UMBRAL_HIPO && descartada !== clave;
+    Number.isFinite(valor) &&
+    valor > 0 &&
+    valor < UMBRAL_HIPO &&
+    descartada !== clave &&
+    Number.isFinite(new Date(timestamp).getTime()) &&
+    ahora - new Date(timestamp).getTime() <= 15 * 60000 &&
+    new Date(timestamp).getTime() <= ahora + 5 * 60000;
 
   if (!debeAbrirse) return null;
 
-  return <AlertaHipoglucemia glucosa={valor} onCerrar={() => setDescartada(clave)} />;
+  return (
+    <AlertaHipoglucemia glucosa={valor} onCerrar={() => setDescartada(clave)} />
+  );
 }

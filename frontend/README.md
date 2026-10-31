@@ -1,128 +1,54 @@
-# PancreasOS · Frontend
+# Pancreas OS · Frontend
 
-PWA mobile-first en Next.js 16 (App Router) + Tailwind v4. Lee y escribe
-directo en Neon desde Server Components y Server Actions.
+Aplicación privada para seguir glucosa, registrar comidas e insulina y contar alimentos por peso.
 
-```bash
-cd frontend
-npm install
-cp .env.example .env.local   # completa DATABASE_URL
-npm run dev                  # http://localhost:3000
-```
+## Rutas activas
 
-## Rutas
+- /: última lectura, curva del día, accesos de registro y pauta vigente.
+- /registro: comida consumida e insulina administrada, en formularios separados.
+- /historial: curva por fecha y eventos de comida e insulina.
+- /pauta: indicaciones de consulta comunicadas por la familia, metas y próxima revisión.
+- /plan: redirección al registro de comida. El plan diario, agua y actividad ya no forman parte del flujo.
 
-| Ruta | Qué hace | Tablas |
-|---|---|---|
-| `/` | Glucosa actual en grande, con color por rango y flecha de tendencia. Última insulina, última comida y totales del día. | `cgm_readings`, `insulin_logs`, `meals` |
-| `/registro` | Alta de comida, insulina, agua y actividad en pestañas. | `meals`, `insulin_logs`, `water_logs`, `activities` |
-| `/historial` | Curva del día, tiempo en rango y línea de tiempo de eventos. | todas |
+## Pauta médica privada
 
-`/registro?tipo=insulina` abre directo esa pestaña (lo usan los accesos
-directos del manifest).
+La pauta se lee de la tabla care_plans; sus valores no se incluyen en el repositorio ni en variables NEXT_PUBLIC.
+Cada cambio de consulta se registra con una fecha de vigencia. Una revisión futura nunca aumenta dosis automáticamente.
+La pantalla del PIN y el proxy protegen estas rutas, y cada Server Action valida su propia sesión.
 
-## Estructura
+Aplica sql/003_followup.sql primero en una rama aislada y verifica antes de producción.
+La migración agrega estructura y campos; conserva los registros históricos y no contiene datos de pacientes.
+Las claves y las conexiones viven en variables privadas del entorno. No publiques archivos .env.
 
-```
-app/
-  layout.js            Tema, metadata PWA, navegación inferior
-  page.js              Dashboard
-  registro/page.js     Formularios
-  historial/page.js    Gráfica + timeline
-  actions.js           Server Actions (los INSERT)
-lib/
-  config.js            TZ y rango objetivo (lo usan servidor y cliente)
-  db.js                Pool de Neon
-  queries.js           Todos los SELECT
-  glucosa.js           Color por rango, flechas y formato de fechas
-components/            Hero, tarjetas, formularios, gráfica, timeline
-```
+El reparto de una dosis fija entre comida y corrección permanece desactivado mientras falten objetivos de comida,
+reglas de insulina activa y límites del protocolo confirmados con el equipo médico.
+Un rango general o una meta al despertar no se convierten en un objetivo de corrección elegido por Gemini.
+La función aritmética preparada está en lib/pauta.mjs y exige un protocolo completo; no agrega bolos.
 
-## El plan alimenticio vive en un solo archivo
+## Nutrientes y Gemini
 
-`lib/menus.js` concentra TODO lo clínico: las dosis fijas de Lyumjev, los dos menús de
-cada comida, los gramos de carbohidratos de cada alimento, el objetivo de 120 mg/dL, el
-factor de sensibilidad de 4 y el protocolo de rescate.
+lib/alimentos.json contiene un catálogo inicial atribuido a USDA FoodData Central, SR Legacy 04/2018.
+Cada alimento conserva su FDC ID, descripción, preparación y valores por 100 g de parte comestible.
+La importación reproducible está en scripts/import_usda.py. Descarga el CSV oficial desde
+https://fdc.nal.usda.gov/download-datasets/ y pasa la carpeta extraída al script.
 
-**Si el nutriólogo o el endocrinólogo cambian algo, se edita ahí y solo ahí.** Ningún
-componente tiene números clínicos escritos dentro.
+Gemini organiza una idea de plato usando IDs del catálogo. El servidor rechaza IDs, pesos y respuestas inválidos,
+recalcula todos los nutrientes, y vuelve a consultar sensor y pauta después de recibir la respuesta.
+No se aceptan nutrientes inventados por el modelo ni equivalencias de marcas no verificadas.
+El catálogo no pretende cubrir todos los alimentos. Para productos ausentes se admite registro manual según etiqueta.
 
-### Calculadora de porciones
+Las ideas priorizan verduras y proteína y evitan azúcar añadida. La atención de hipoglucemia sigue su protocolo separado.
+No se convierten grasa/proteína en insulina extra. El conteo no garantiza una glucosa posterior.
 
-Como las dosis no se mueven, lo que se ajusta es el plato:
+## Registro y verificación
 
-```
-ajuste = (120 − glucosa actual) ÷ 4          → gramos de carbos a sumar o restar
-gramos en báscula = carbos ajustados × (gramos base ÷ carbos base)
-```
+Guardar comida nunca registra una inyección. La insulina solo se registra cuando se confirma su administración real.
+Las solicitudes tienen claves de idempotencia e índices únicos: reintentar una solicitud no duplica el evento.
+Los nutrientes y pesos quedan en meals.nutrition para mantener su procedencia.
 
-Los alimentos fijos nunca cambian; solo se recalcula el "alimento ajustable" de cada menú.
-Si la glucosa viene tan alta que la ración daría negativo, se topa en 0 g.
+Ejecuta npm test, npm run lint y npm run build.
+En Windows puede usarse npm run build -- --webpack si Turbopack no puede iniciar sus procesos.
+Prueba el guardado en una rama aislada; no insertes eventos ficticios en el historial de producción.
 
-### Protocolo de hipoglucemia
-
-Por debajo de 70 mg/dL —venga del sensor o escrito a mano— se toma la pantalla completa
-con las tres fases: rescate rápido, espera de 15 minutos y colación de mantenimiento.
-
-El cronómetro se guarda en `localStorage` con su hora de vencimiento absoluta, así que
-sigue corriendo aunque se bloquee el celular o se cierre la app.
-
-## Decisiones que conviene conocer
-
-**Sin API Routes.** Las páginas son Server Components y llaman a `lib/queries.js`
-directamente; los formularios usan Server Actions. Una capa REST intermedia solo
-añadiría latencia y código que mantener.
-
-**Las fechas se formatean en el servidor**, siempre con `APP_TIMEZONE` explícito.
-Si se formatearan en el navegador, el HTML del servidor y el del cliente no
-coincidirían y React tiraría un error de hidratación. Por lo mismo, "hoy" se
-calcula en SQL con la zona horaria, no con el reloj UTC de Vercel.
-
-**Nada se cachea.** Las tres rutas son `force-dynamic` y el service worker solo
-guarda los assets estáticos de Next. Mostrar una glucosa vieja como si fuera la
-actual sería peor que no mostrar nada.
-
-**Las Server Actions validan rangos** antes de tocar la base: máximo 100 U de
-insulina, 500 g de carbohidratos, 3000 ml de agua. No son límites clínicos, son
-un freno a los errores de dedo.
-
-**El tema es oscuro a propósito.** Esta app se abre de noche para revisar una
-hipoglucemia; una pantalla blanca a las 3am deslumbra.
-
-## El candado (PIN)
-
-`proxy.js` corta las peticiones antes de que Next renderice nada: quien no traiga
-una cookie de sesión válida recibe una redirección a `/pin`, nunca los datos.
-
-El PIN se valida en el servidor con `APP_PIN` y la sesión viaja en una cookie
-`httpOnly` cuyo valor es un HMAC del PIN, no el PIN. **No se usa
-`NEXT_PUBLIC_APP_PIN` como fuente principal**: todo lo que lleva ese prefijo se
-incrusta en el JavaScript que descarga el navegador y el PIN quedaría a la vista
-en las herramientas de desarrollo. Se acepta como respaldo, pero conviene migrar.
-
-Si `APP_PIN` no está definida, la app queda **cerrada** y lo dice en pantalla.
-Falla del lado seguro: es preferible un despliegue inaccesible a uno que publique
-el historial médico de un niño.
-
-Cambiar el PIN invalida todas las sesiones abiertas, porque el token se deriva de él.
-
-## Análisis con IA (Gemini)
-
-Dos Server Actions en `app/ai-actions.js`:
-
-| Función | Modelo | Cuándo corre |
-|---|---|---|
-| `pronosticoCorto()` | `GEMINI_MODEL_FLASH` | Al abrir el dashboard, en streaming |
-| `auditoriaSemanal()` | `GEMINI_MODEL_PRO` | Solo al pulsar el botón en `/historial` |
-
-El vigilante cachea su respuesta en memoria por `VIGILANTE_TTL_MINUTOS` y la
-indexa por el timestamp de la última lectura: refrescar el dashboard no vuelve a
-gastar cuota si el sensor no mandó dato nuevo.
-
-Los identificadores de modelo son variables de entorno a propósito. Si Google
-renombra o retira alguno, se cambia en Vercel sin volver a desplegar código;
-`listarModelosDisponibles()` sirve para ver cuáles reconoce tu API key.
-
-**La IA es orientativa.** La alerta de hipoglucemia por debajo de 70 mg/dL es
-determinista, vive en `AlertaHipoglucemia.js` y no depende de que el modelo
-acierte ni de que la API responda.
+El service worker cachea únicamente assets estáticos con hash. No cachea páginas ni lecturas de glucosa.
+Las interrupciones del sensor se muestran sin interpolar lecturas inexistentes en la gráfica.

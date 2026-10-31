@@ -1,155 +1,195 @@
-'use server';
+"use server";
+import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
+import { query, TZ } from "@/lib/db";
+import { COOKIE_SESION, tokenValido } from "@/lib/auth";
+import { getPacienteId } from "@/lib/queries";
+import { TIPOS_COMIDA } from "@/lib/pauta.mjs";
+import { calcularPlato } from "@/lib/nutricion.mjs";
+import catalogo from "@/lib/alimentos.json";
 
-import { revalidatePath } from 'next/cache';
-import { query, TZ } from '@/lib/db';
-import { getPacienteId } from '@/lib/queries';
-
-/**
- * Server Actions de registro. Todas siguen la misma forma
- * (estadoPrevio, formData) -> { ok, mensaje } para poder usarlas con
- * useActionState en los formularios.
- */
-
-/**
- * Si el formulario trae una hora, se interpreta como hora local de HOY.
- * Construirlo en SQL evita que el reloj del servidor (UTC en Vercel) mueva
- * el registro de día.
- */
-const EXPRESION_FECHA = `
-  CASE WHEN $HORA::text IS NULL OR $HORA::text = '' THEN now()
-       ELSE (date_trunc('day', now() AT TIME ZONE '${TZ}') + $HORA::time) AT TIME ZONE '${TZ}'
-  END`;
-
-function fechaSql(indiceParam) {
-  return EXPRESION_FECHA.replaceAll('$HORA', `$${indiceParam}`);
+async function haySesion() {
+  const c = await cookies();
+  return tokenValido(c.get(COOKIE_SESION)?.value);
 }
-
-function numero(valor, { min, max, campo, entero = false }) {
-  const n = Number(String(valor ?? '').replace(',', '.'));
-  if (!Number.isFinite(n)) throw new Error(`${campo}: escribe un número válido.`);
-  if (entero && !Number.isInteger(n)) throw new Error(`${campo}: debe ser un número entero.`);
-  if (n < min || n > max) throw new Error(`${campo}: debe estar entre ${min} y ${max}.`);
+function numero(valor, min, max, campo) {
+  if (valor == null || String(valor).trim() === "")
+    throw new Error(campo + ": falta el valor.");
+  const n = Number(String(valor).replace(",", "."));
+  if (!Number.isFinite(n) || n < min || n > max)
+    throw new Error(
+      campo + ": escribe un valor entre " + min + " y " + max + ".",
+    );
   return n;
 }
-
-function texto(valor, { max = 500, campo, requerido = false }) {
-  const t = String(valor ?? '').trim();
-  if (requerido && !t) throw new Error(`${campo}: no puede quedar vacío.`);
-  if (t.length > max) throw new Error(`${campo}: máximo ${max} caracteres.`);
-  return t || null;
+function idSolicitud(formData) {
+  const id = String(formData.get("request_id") || "");
+  if (!/^[a-f0-9-]{36}$/i.test(id))
+    throw new Error("Recarga el formulario antes de guardar.");
+  return id;
 }
-
+function horaOpcional(valor) {
+  const h = String(valor || "");
+  if (!h) return null;
+  if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(h))
+    throw new Error("Hora no válida.");
+  const ahora = new Intl.DateTimeFormat("en-GB", {
+    timeZone: TZ,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date());
+  if (h > ahora)
+    throw new Error(
+      "No se puede registrar una hora futura. Se usa la fecha de hoy.",
+    );
+  return h;
+}
 function refrescar() {
-  revalidatePath('/');
-  revalidatePath('/historial');
+  revalidatePath("/");
+  revalidatePath("/historial");
+  revalidatePath("/registro");
 }
-
-const TIPOS_COMIDA = ['Desayuno', 'Comida', 'Cena', 'Colación'];
-const TIPOS_INSULINA = ['Lyumjev', 'Tresiba'];
-const INTENSIDADES = ['Baja', 'Media', 'Alta'];
-
-export async function registrarComida(_estadoPrevio, formData) {
+function fechaSql(indice) {
+  return (
+    "CASE WHEN $" +
+    indice +
+    "::text IS NULL THEN now() ELSE ((now() AT TIME ZONE '" +
+    TZ +
+    "')::date + $" +
+    indice +
+    "::time) AT TIME ZONE '" +
+    TZ +
+    "' END"
+  );
+}
+function fallo(err) {
+  console.error("[registro]", err?.code || "validation");
+  return {
+    ok: false,
+    mensaje: err?.code
+      ? "No se pudo guardar. Intenta de nuevo; un reintento no duplicará este registro."
+      : err.message,
+  };
+}
+export async function registrarComida(_estado, formData) {
+  if (!(await haySesion())) return { ok: false, mensaje: "Sesión no válida." };
   try {
-    const tipo = String(formData.get('meal_type') || '');
-    if (!TIPOS_COMIDA.includes(tipo)) throw new Error('Elige el tipo de comida.');
-
-    const descripcion = texto(formData.get('description'), {
-      campo: 'Descripción',
-      requerido: true,
-    });
-    const carbos = numero(formData.get('carbs_grams'), {
-      min: 0,
-      max: 500,
-      campo: 'Carbohidratos',
-    });
-    const hora = formData.get('hora');
+    const tipo = String(formData.get("meal_type") || "");
+    if (!TIPOS_COMIDA.includes(tipo))
+      throw new Error("Elige el tipo de comida.");
+    const descripcion = String(formData.get("description") || "").trim();
+    if (!descripcion || descripcion.length > 1000)
+      throw new Error("Describe la comida, hasta 1000 caracteres.");
+    const requestId = idSolicitud(formData);
+    const hora = horaOpcional(formData.get("hora"));
+    const ingredientes = String(formData.get("ingredients") || "");
+    let nutrition = null;
+    let carbos;
+    if (ingredientes) {
+      let parsed;
+      try {
+        parsed = JSON.parse(ingredientes);
+      } catch {
+        throw new Error("No se pudo leer el plato. Vuelve a seleccionarlo.");
+      }
+      const plato = calcularPlato(parsed, catalogo);
+      carbos = plato.totals.carbs;
+      nutrition = {
+        source: "USDA SR Legacy 04/2018",
+        totals: plato.totals,
+        foods: plato.foods.map((f) => ({
+          id: f.id,
+          grams: f.grams,
+          name: f.name,
+          url: f.url,
+          preparation: f.preparation,
+          per100g: f.per100g,
+        })),
+      };
+    } else {
+      carbos = numero(formData.get("carbs_grams"), 0, 500, "Carbohidratos");
+      const protein = formData.get("protein_grams");
+      const fat = formData.get("fat_grams");
+      const kcal = formData.get("kcal");
+      nutrition = {
+        source: "Registro manual o etiqueta del producto",
+        totals: {
+          carbs: carbos,
+          protein:
+            protein == null || protein === ""
+              ? null
+              : numero(protein, 0, 300, "Proteína"),
+          fat: fat == null || fat === "" ? null : numero(fat, 0, 300, "Grasa"),
+          kcal:
+            kcal == null || kcal === ""
+              ? null
+              : numero(kcal, 0, 3000, "Energía"),
+        },
+      };
+    }
+    if (carbos > 500)
+      throw new Error(
+        "Revisa el peso de los alimentos: el conteo supera el límite del formulario.",
+      );
     const pacienteId = await getPacienteId();
-
-    await query(
-      `INSERT INTO meals (user_id, meal_type, description, carbs_grams, "timestamp")
-       VALUES ($1, $2, $3, $4, ${fechaSql(5)})`,
-      [pacienteId, tipo, descripcion, carbos, hora]
+    const r = await query(
+      'INSERT INTO meals (user_id,meal_type,description,carbs_grams,"timestamp",nutrition,request_id) VALUES ($1,$2,$3,$4,' +
+        fechaSql(5) +
+        ",$6::jsonb,$7) ON CONFLICT (request_id) DO NOTHING RETURNING id",
+      [
+        pacienteId,
+        tipo,
+        descripcion,
+        carbos,
+        hora,
+        JSON.stringify(nutrition),
+        requestId,
+      ],
     );
-
     refrescar();
-    return { ok: true, mensaje: `${tipo} registrado: ${carbos} g de carbohidratos.` };
+    return {
+      ok: true,
+      mensaje: r.rowCount
+        ? "Comida guardada: " +
+          carbos +
+          " g de carbohidratos. No se registró ninguna inyección."
+        : "Esta comida ya estaba guardada. No se duplicó.",
+    };
   } catch (err) {
-    console.error('[registrarComida]', err);
-    return { ok: false, mensaje: err.message || 'No se pudo guardar la comida.' };
+    return fallo(err);
   }
 }
-
-export async function registrarInsulina(_estadoPrevio, formData) {
+export async function registrarInsulina(_estado, formData) {
+  if (!(await haySesion())) return { ok: false, mensaje: "Sesión no válida." };
   try {
-    const tipo = String(formData.get('type') || '');
-    if (!TIPOS_INSULINA.includes(tipo)) throw new Error('Elige el tipo de insulina.');
-
-    // Tope de 100 U: no es un límite clínico, es un freno a los dedos gordos.
-    const unidades = numero(formData.get('units'), { min: 0.5, max: 100, campo: 'Unidades' });
-    const hora = formData.get('hora');
-
-    await query(
-      `INSERT INTO insulin_logs (type, units, "timestamp") VALUES ($1, $2, ${fechaSql(3)})`,
-      [tipo, unidades, hora]
+    const tipo = String(formData.get("type") || "");
+    if (!["Lyumjev", "Tresiba"].includes(tipo))
+      throw new Error("Elige el tipo de insulina.");
+    const units = numero(
+      formData.get("units"),
+      0.5,
+      100,
+      "Unidades administradas",
     );
-
-    refrescar();
-    return { ok: true, mensaje: `${tipo}: ${unidades} unidades registradas.` };
-  } catch (err) {
-    console.error('[registrarInsulina]', err);
-    return { ok: false, mensaje: err.message || 'No se pudo guardar la insulina.' };
-  }
-}
-
-export async function registrarAgua(_estadoPrevio, formData) {
-  try {
-    const ml = numero(formData.get('amount_ml'), {
-      min: 10,
-      max: 3000,
-      campo: 'Cantidad',
-      entero: true,
-    });
-
-    await query(
-      `INSERT INTO water_logs (amount_ml, "timestamp") VALUES ($1, ${fechaSql(2)})`,
-      [ml, formData.get('hora')]
+    const hora = horaOpcional(formData.get("hora"));
+    const requestId = idSolicitud(formData);
+    if (formData.get("administered") !== "yes")
+      throw new Error("Confirma que esta dosis ya fue administrada.");
+    const r = await query(
+      'INSERT INTO insulin_logs (type,units,"timestamp",request_id) VALUES ($1,$2,' +
+        fechaSql(3) +
+        ",$4) ON CONFLICT (request_id) DO NOTHING RETURNING id",
+      [tipo, units, hora, requestId],
     );
-
     refrescar();
-    return { ok: true, mensaje: `${ml} ml de agua registrados.` };
+    return {
+      ok: true,
+      mensaje: r.rowCount
+        ? tipo + ": " + units + " U guardadas como administradas."
+        : "Esta dosis ya estaba guardada. No se duplicó.",
+    };
   } catch (err) {
-    console.error('[registrarAgua]', err);
-    return { ok: false, mensaje: err.message || 'No se pudo guardar el agua.' };
-  }
-}
-
-export async function registrarActividad(_estadoPrevio, formData) {
-  try {
-    const tipo = texto(formData.get('activity_type'), {
-      campo: 'Tipo de actividad',
-      requerido: true,
-      max: 100,
-    });
-    const minutos = numero(formData.get('duration_minutes'), {
-      min: 0,
-      max: 600,
-      campo: 'Duración',
-      entero: true,
-    });
-
-    const intensidad = String(formData.get('intensity') || '');
-    if (!INTENSIDADES.includes(intensidad)) throw new Error('Elige la intensidad.');
-
-    await query(
-      `INSERT INTO activities (activity_type, duration_minutes, intensity, "timestamp")
-       VALUES ($1, $2, $3, ${fechaSql(4)})`,
-      [tipo, minutos, intensidad, formData.get('hora')]
-    );
-
-    refrescar();
-    return { ok: true, mensaje: `${tipo}: ${minutos} min registrados.` };
-  } catch (err) {
-    console.error('[registrarActividad]', err);
-    return { ok: false, mensaje: err.message || 'No se pudo guardar la actividad.' };
+    return fallo(err);
   }
 }

@@ -1,4 +1,4 @@
-@import 'tailwindcss';
+@import "tailwindcss";
 
 /*
  * Tema oscuro por defecto y a propósito: esta app se consulta de noche,
@@ -6,17 +6,17 @@
  * deslumbra y cuesta leer el número.
  */
 @theme {
-  --color-fondo: #0a0e13;
-  --color-superficie: #141a22;
-  --color-superficie-alta: #1b232d;
-  --color-borde: #253140;
-  --color-texto: #e8eef4;
-  --color-tenue: #8a98a6;
+  --color-fondo: #0b171a;
+  --color-superficie: #12272b;
+  --color-superficie-alta: #1a353a;
+  --color-borde: #315158;
+  --color-texto: #eef8f5;
+  --color-tenue: #adc4c1;
 
   --color-bajo: #ff4d4f;
   --color-rango: #22c55e;
   --color-alto: #f5a524;
-  --color-acento: #38bdf8;
+  --color-acento: #b4efdc;
 
   --font-sans: var(--font-geist-sans), system-ui, -apple-system, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, monospace;
@@ -51,12 +51,12 @@ button {
 }
 
 /* Quita las flechitas de los input number: estorban en móvil. */
-input[type='number']::-webkit-outer-spin-button,
-input[type='number']::-webkit-inner-spin-button {
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
   -webkit-appearance: none;
   margin: 0;
 }
-input[type='number'] {
+input[type="number"] {
   -moz-appearance: textfield;
 }
 
@@ -72,5 +72,88 @@ input[type='number'] {
 @utility tarjeta {
   background-color: var(--color-superficie);
   border: 1px solid var(--color-borde);
+  border-radius: 1.35rem;
+}
+
+@utility pagina {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding-bottom: 1rem;
+}
+@utility eyebrow {
+  color: var(--color-tenue);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+@utility titulo-pagina {
+  margin-top: 0.5rem;
+  font-size: clamp(1.7rem, 5vw, 2.3rem);
+  font-weight: 650;
+  line-height: 1.15;
+  letter-spacing: -0.035em;
+}
+@utility campo {
+  width: 100%;
+  min-height: 3.2rem;
+  padding: 0.8rem 1rem;
+  border: 1px solid var(--color-borde);
+  border-radius: 0.8rem;
+  background: var(--color-fondo);
+  color: var(--color-texto);
+}
+@utility boton-primario {
+  display: flex;
+  min-height: 3.5rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
   border-radius: 1rem;
+  padding: 0.8rem 1rem;
+  background: var(--color-acento);
+  color: var(--color-fondo);
+  font-size: 0.95rem;
+  font-weight: 650;
+  text-align: center;
+}
+@utility boton-secundario {
+  display: flex;
+  min-height: 3.5rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  border: 1px solid var(--color-borde);
+  border-radius: 1rem;
+  padding: 0.8rem 1rem;
+  background: var(--color-superficie);
+  color: var(--color-acento);
+  font-size: 0.95rem;
+  font-weight: 600;
+  text-align: center;
+}
+@utility aviso {
+  padding: 1rem;
+  border: 1px solid var(--color-borde);
+  border-radius: 0.8rem;
+  background: var(--color-superficie-alta);
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-acento);
+  outline-offset: 4px;
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+input[readonly],
+textarea[readonly] {
+  opacity: 0.8;
+}
+[hidden] {
+  display: none !important;
 }
