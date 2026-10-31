@@ -1,11 +1,11 @@
-import { CalendarOff } from 'lucide-react';
+import { CalendarOff } from "lucide-react";
 
-import GraficaGlucosa from '@/components/GraficaGlucosa';
-import Timeline from '@/components/Timeline';
-import AuditoriaSemanal from '@/components/AuditoriaSemanal';
-import NavegadorDias from '@/components/NavegadorDias';
-import AutoRefresh from '@/components/AutoRefresh';
-import ErrorDeConexion from '@/components/ErrorDeConexion';
+import GraficaGlucosa from "@/components/GraficaGlucosa";
+import Timeline from "@/components/Timeline";
+import AuditoriaSemanal from "@/components/AuditoriaSemanal";
+import NavegadorDias from "@/components/NavegadorDias";
+import AutoRefresh from "@/components/AutoRefresh";
+import ErrorDeConexion from "@/components/ErrorDeConexion";
 import {
   getHoyLocal,
   getRangoDeDatos,
@@ -13,25 +13,31 @@ import {
   getTimelineDelDia,
   getEstadisticasDelDia,
   getTotalesDelDia,
-} from '@/lib/queries';
-import { hora } from '@/lib/glucosa';
-import { TZ } from '@/lib/db';
+} from "@/lib/queries";
+import { prepararGrafica } from "@/lib/grafica";
 
-export const dynamic = 'force-dynamic';
-export const metadata = { title: 'Historial · PancreasOS' };
+export const dynamic = "force-dynamic";
+export const metadata = { title: "Historial · PancreasOS" };
 
 const ES_FECHA = /^\d{4}-\d{2}-\d{2}$/;
 
 function Metrica({ etiqueta, valor, unidad, color }) {
   return (
     <div className="tarjeta flex flex-col items-center gap-0.5 px-2 py-3">
-      <span className="font-mono text-xl font-bold tabular-nums" style={color ? { color } : undefined}>
-        {valor ?? '--'}
+      <span
+        className="font-mono text-xl font-bold tabular-nums"
+        style={color ? { color } : undefined}
+      >
+        {valor ?? "--"}
         {valor != null && unidad && (
-          <span className="ml-0.5 text-xs font-normal text-tenue">{unidad}</span>
+          <span className="ml-0.5 text-xs font-normal text-tenue">
+            {unidad}
+          </span>
         )}
       </span>
-      <span className="text-center text-[11px] leading-tight text-tenue">{etiqueta}</span>
+      <span className="text-center text-[11px] leading-tight text-tenue">
+        {etiqueta}
+      </span>
     </div>
   );
 }
@@ -39,8 +45,12 @@ function Metrica({ etiqueta, valor, unidad, color }) {
 function Total({ etiqueta, valor }) {
   return (
     <div className="flex flex-col items-center gap-0.5 px-1 py-3">
-      <span className="font-mono text-base font-semibold tabular-nums">{valor}</span>
-      <span className="text-center text-[10px] leading-tight text-tenue">{etiqueta}</span>
+      <span className="font-mono text-base font-semibold tabular-nums">
+        {valor}
+      </span>
+      <span className="text-center text-[10px] leading-tight text-tenue">
+        {etiqueta}
+      </span>
     </div>
   );
 }
@@ -55,7 +65,9 @@ export default async function HistorialPage({ searchParams }) {
 
     // Solo se aceptan fechas bien formadas y nunca del futuro.
     const fecha =
-      typeof pedida === 'string' && ES_FECHA.test(pedida) && pedida <= hoy ? pedida : hoy;
+      typeof pedida === "string" && ES_FECHA.test(pedida) && pedida <= hoy
+        ? pedida
+        : hoy;
 
     const [rango, lecturas, eventos, stats, totales] = await Promise.all([
       getRangoDeDatos(),
@@ -67,7 +79,7 @@ export default async function HistorialPage({ searchParams }) {
 
     datos = { fecha, rango, lecturas, eventos, stats, totales };
   } catch (err) {
-    console.error('[historial]', err);
+    console.error("[historial]", err);
     return <ErrorDeConexion mensaje={err.message} />;
   }
 
@@ -76,25 +88,13 @@ export default async function HistorialPage({ searchParams }) {
 
   // La gráfica necesita datos planos: la hora se convierte a decimal aquí,
   // en el servidor y con la zona explícita, para no romper la hidratación.
-  const datosGrafica = lecturas.map((l) => {
-    const partes = new Intl.DateTimeFormat('es-MX', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-      timeZone: TZ,
-    }).formatToParts(new Date(l.timestamp));
+  const datosGrafica = prepararGrafica(lecturas);
 
-    const h = Number(partes.find((p) => p.type === 'hour').value);
-    const m = Number(partes.find((p) => p.type === 'minute').value);
-
-    return { hora: h + m / 60, valor: Number(l.glucose_value), etiqueta: hora(l.timestamp) };
-  });
-
-  const titulo = new Intl.DateTimeFormat('es-MX', {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-    timeZone: 'UTC',
+  const titulo = new Intl.DateTimeFormat("es-MX", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    timeZone: "UTC",
   }).format(new Date(`${fecha}T12:00:00Z`));
 
   const sinDatos = lecturas.length === 0 && eventos.length === 0;
@@ -125,9 +125,20 @@ export default async function HistorialPage({ searchParams }) {
         </div>
       ) : (
         <>
-          <section aria-label="Resumen del día" className="grid grid-cols-4 gap-2">
-            <Metrica etiqueta="en rango" valor={stats.porcentajeEnRango} unidad="%" color="#22C55E" />
-            <Metrica etiqueta="promedio" valor={stats.promedio ? Math.round(stats.promedio) : null} />
+          <section
+            aria-label="Resumen del día"
+            className="grid grid-cols-4 gap-2"
+          >
+            <Metrica
+              etiqueta="en rango"
+              valor={stats.porcentajeEnRango}
+              unidad="%"
+              color="#22C55E"
+            />
+            <Metrica
+              etiqueta="promedio"
+              valor={stats.promedio ? Math.round(stats.promedio) : null}
+            />
             <Metrica etiqueta="mínima" valor={stats.minimo} color="#FF4D4F" />
             <Metrica etiqueta="máxima" valor={stats.maximo} color="#F5A524" />
           </section>
@@ -139,16 +150,17 @@ export default async function HistorialPage({ searchParams }) {
             </p>
           </section>
 
-          <section aria-label="Totales del día" className="tarjeta grid grid-cols-4 divide-x divide-borde p-1">
+          <section
+            aria-label="Totales del día"
+            className="tarjeta grid grid-cols-2 divide-x divide-borde p-1"
+          >
             <Total etiqueta="g carbos" valor={totales.carbos} />
             <Total etiqueta="U insulina" valor={totales.unidades} />
-            <Total etiqueta="ml agua" valor={totales.aguaMl} />
-            <Total etiqueta="min activo" valor={totales.minutosActividad} />
           </section>
 
           <section aria-label="Eventos del día">
             <h2 className="mb-3 text-lg font-semibold">
-              {esHoy ? 'Eventos de hoy' : 'Eventos del día'}
+              {esHoy ? "Eventos de hoy" : "Eventos del día"}
             </h2>
             <Timeline eventos={eventos} />
           </section>
@@ -156,8 +168,8 @@ export default async function HistorialPage({ searchParams }) {
       )}
 
       <p className="pt-2 text-center text-xs leading-relaxed text-tenue">
-        Herramienta de seguimiento. No sustituye el criterio del equipo médico de Gaelito
-        ni sirve para decidir dosis.
+        Herramienta de seguimiento. No sustituye el criterio del equipo médico
+        de Gaelito ni sirve para decidir dosis.
       </p>
     </div>
   );
