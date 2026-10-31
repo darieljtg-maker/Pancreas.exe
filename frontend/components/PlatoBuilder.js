@@ -29,6 +29,7 @@ export default function PlatoBuilder({
   const [deseo, setDeseo] = useState("");
   const [restricciones, setRestricciones] = useState("");
   const [mensaje, setMensaje] = useState(null);
+  const [modoRespuesta, setModoRespuesta] = useState(null);
   const [pendiente, iniciar] = useTransition();
   const [revisado, setRevisado] = useState(false);
   const referencia = referenciaCarbos(pauta, comida);
@@ -62,6 +63,7 @@ export default function PlatoBuilder({
       try {
         const r = await sugerirPlato({ comida, deseo, restricciones });
         if (r.ok) {
+          setModoRespuesta(r.modo);
           cambiar(r.foods.map((f) => ({ id: f.id, grams: f.grams })));
           setMensaje({ ok: true, texto: r.mensaje });
         } else setMensaje({ ok: false, texto: r.mensaje });
@@ -85,8 +87,8 @@ export default function PlatoBuilder({
           <h3 className="font-semibold">¿Qué le gustaría comer?</h3>
         </div>
         <p className="mt-2 text-sm text-tenue">
-          Gemini organiza la idea. El conteo usa las tablas de USDA, con
-          porciones que puedes revisar y pesar.
+          Consulta alimentos con cualquier lectura de glucosa. Gemini los
+          identifica en las tablas de USDA; tú revisas la preparación y el peso.
         </p>
         <label className="mt-4 block text-sm font-medium" htmlFor="deseo">
           Alimentos que desea ingerir
@@ -116,28 +118,24 @@ export default function PlatoBuilder({
         />
         {sensor.estado !== "reciente" && (
           <p role="status" className="mt-3 text-sm text-alto">
-            {sensor.mensaje} Puedes seguir contando lo que realmente comió.
+            {sensor.mensaje} La consulta nutricional sigue disponible: usa
+            valores por 100 g para comparar alimentos y cambia el peso real.
           </p>
         )}
         {!referencia && (
           <p className="mt-3 text-sm text-tenue">
-            Para esta comida no hay referencia de conteo prescrita. Usa el
-            catálogo o el registro manual.
+            Para esta comida la IA mostrará composición por 100 g, sin ajustar
+            cantidades a una dosis de insulina.
           </p>
         )}
         <button
           type="button"
           onClick={sugerir}
-          disabled={
-            pendiente ||
-            deseo.trim().length < 3 ||
-            sensor.estado !== "reciente" ||
-            !referencia
-          }
+          disabled={pendiente || deseo.trim().length < 3}
           className="boton-secundario mt-4 w-full"
         >
           <Sparkles size={17} aria-hidden="true" />
-          {pendiente ? "Preparando idea…" : "Proponer porciones con IA"}
+          {pendiente ? "Consultando alimentos…" : "Consultar alimentos con IA"}
         </button>
       </div>
       {mensaje && (
@@ -293,13 +291,15 @@ export default function PlatoBuilder({
               </div>
             ))}
           </div>
-          {referencia != null && (
-            <p className="text-sm text-tenue">
-              Referencia aritmética de la pauta: {referencia} g CH antes de
-              cualquier ajuste por glucosa. No es una indicación de comer esa
-              cantidad con glucosa alta.
-            </p>
-          )}
+          {referencia != null &&
+            sensor.estado === "reciente" &&
+            modoRespuesta !== "conteo" && (
+              <p className="text-sm text-tenue">
+                Referencia aritmética de la pauta: {referencia} g CH antes de
+                cualquier ajuste por glucosa. No es una indicación de comer esa
+                cantidad con glucosa alta.
+              </p>
+            )}
           {(!plato.hasVegetable || !plato.hasProtein) && (
             <p className="aviso text-tenue">
               Revisa si el plato puede incluir verduras y una fuente de
