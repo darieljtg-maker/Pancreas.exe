@@ -213,36 +213,89 @@ test("el asistente devuelve porciones con nutrientes del servidor y no acepta to
   });
   const r = await a.sugerir(entradaSintetica);
   assert.equal(r.ok, true);
+  assert.equal(r.modo, "pauta");
   assert.equal(r.totals.carbs, 40);
   assert.equal(r.foods[0].grams, 140);
   assert.equal(Object.hasOwn(r, "dosis"), false);
 });
-test("el asistente no llama a Gemini sin sesión, con glucosa alta o con datos viejos", async () => {
-  for (const [valor, edad, autorizado] of [
-    [120, 1, false],
-    [200, 1, true],
-    [300, 1, true],
-    [120, 20, true],
+test("el asistente mantiene el conteo con glucosa alta, baja, antigua o futura sin adaptar el plato a la dosis", async () => {
+  for (const [valor, edad] of [
+    [65, 1],
+    [181, 1],
+    [250, 1],
+    [300, 1],
+    [600, 1],
+    [120, 20],
+    [120, -10],
   ]) {
     const a = await cargarAccion([{ ...lectura(edad), glucose_value: valor }], {
       pauta: pautaSintetica,
-      autorizado,
+      catalogoPlato: catalogoSintetico,
+      respuestaPlato: respuestaSintetica,
     });
-    assert.equal(
-      (await a.sugerir({ ...entradaSintetica, glucosa: 120 })).ok,
-      false,
+    const r = await a.sugerir({ ...entradaSintetica, glucosa: 120 });
+    assert.equal(r.ok, true);
+    assert.equal(r.modo, "conteo");
+    assert.equal(r.referencia, null);
+    assert.deepEqual(
+      Array.from(r.foods, (f) => f.grams),
+      [100, 100, 100],
     );
-    assert.equal(a.llamadas(), 0);
+    assert.equal(r.totals.carbs, 30);
+    assert.equal(Object.hasOwn(r, "dosis"), false);
+    assert.equal(a.llamadas(), 1);
   }
 });
-test("el asistente descarta una propuesta si el sensor caduca durante la llamada", async () => {
+
+test("la consulta nutricional funciona sin sensor, sin pauta y para colaciones", async () => {
+  for (const [lecturas, pauta, comida] of [
+    [[], pautaSintetica, "Desayuno"],
+    [[lectura(1)], null, "Desayuno"],
+    [[lectura(1)], pautaSintetica, "Colación"],
+  ]) {
+    const a = await cargarAccion(lecturas, {
+      pauta,
+      catalogoPlato: catalogoSintetico,
+      respuestaPlato: respuestaSintetica,
+    });
+    const r = await a.sugerir({ ...entradaSintetica, comida });
+    assert.equal(r.ok, true);
+    assert.equal(r.modo, "conteo");
+    assert.equal(r.totals.carbs, 30);
+    assert.equal(r.referencia, null);
+  }
+});
+
+test("la consulta nutricional sigue rechazando sesiones inválidas y alimentos desconocidos", async () => {
+  const sinSesion = await cargarAccion([lectura(1)], { autorizado: false });
+  assert.equal((await sinSesion.sugerir(entradaSintetica)).ok, false);
+  assert.equal(sinSesion.llamadas(), 0);
+  for (const respuesta of [
+    { foods: [{ id: 999, grams: 100 }], unavailable: [] },
+    { ...respuestaSintetica, unavailable: ["alimento no verificado"] },
+  ]) {
+    const a = await cargarAccion([{ ...lectura(1), glucose_value: 300 }], {
+      pauta: pautaSintetica,
+      catalogoPlato: catalogoSintetico,
+      respuestaPlato: respuesta,
+    });
+    assert.equal((await a.sugerir(entradaSintetica)).ok, false);
+  }
+});
+
+test("el asistente vuelve a fichas por 100 g si el sensor caduca durante la llamada", async () => {
   const a = await cargarAccion([lectura(1)], {
     pauta: pautaSintetica,
     catalogoPlato: catalogoSintetico,
     respuestaPlato: respuestaSintetica,
     duranteRespuesta: AHORA + 20 * minuto,
   });
-  assert.equal((await a.sugerir(entradaSintetica)).ok, false);
+  const r = await a.sugerir(entradaSintetica);
+  assert.equal(r.ok, true);
+  assert.equal(r.modo, "conteo");
+  assert.equal(r.sensorTimestamp, null);
+  assert.equal(r.totals.carbs, 30);
+  assert.equal(r.referencia, null);
   assert.equal(a.llamadas(), 1);
 });
 
