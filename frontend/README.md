@@ -52,4 +52,3 @@ Prueba el guardado en una rama aislada; no insertes eventos ficticios en el hist
 
 El service worker cachea únicamente assets estáticos con hash. No cachea páginas ni lecturas de glucosa.
 Las interrupciones del sensor se muestran sin interpolar lecturas inexistentes en la gráfica.
-
